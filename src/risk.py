@@ -24,3 +24,13 @@ def position_size(entry: float, stop_loss: float, num_picks: int) -> int:
     qty_by_budget = math.floor(budget_per_pick / entry)
 
     return max(0, min(qty_by_risk, qty_by_budget))
+
+
+def min_affordable_price(num_picks: int) -> float:
+    """The highest per-share price that still buys at least 1 share once
+    MAX_BUDGET is split evenly across num_picks positions. Used to filter
+    candidates out during screening -- before position sizing -- so the
+    watchlist never proposes a stock your budget can't actually buy."""
+    if num_picks <= 0:
+        return 0.0
+    return config.MAX_BUDGET / num_picks

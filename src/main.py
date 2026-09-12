@@ -64,6 +64,11 @@ def save_full_state(state: dict):
 
 
 def run_watchlist():
+    print(
+        f"[config] MAX_BUDGET=Rs{config.MAX_BUDGET:,.0f} "
+        f"RISK_PER_TRADE_PCT={config.RISK_PER_TRADE_PCT*100:.1f}% "
+        f"MAX_PICKS={config.MAX_PICKS}"
+    )
     state = load_full_state()
     api = AngelAPI()
     api.login()

@@ -35,8 +35,12 @@ Three phases, one Railway service, one cron schedule:
    RSI(14), and 20-day swing high/low, and shortlists up to `MAX_PICKS`
    setups where price is within 1.5% of its 20-day high (bullish breakout
    watch) or low (bearish breakdown watch) with a rising 5-day volume
-   trend. Sends you the watchlist with trigger price, stop-loss (1 ATR),
-   target (2 ATR), and share quantity sized to your budget/risk settings.
+   trend. Candidates priced above what `MAX_BUDGET` can actually buy at
+   least 1 share of (split evenly across `MAX_PICKS`) are dropped *before*
+   ranking, even if their setup scores highest — your budget shapes which
+   stocks get proposed, not just how many shares of an already-chosen one.
+   Sends you the watchlist with trigger price, stop-loss (1 ATR), target
+   (2 ATR), and share quantity sized to your budget/risk settings.
 2. **Confirmation (~09:35 IST)**, after the opening range has formed —
    re-checks each watchlist stock's live price and today's volume pace. A
    stock is promoted to "ENTER NOW" only if price has actually crossed its
@@ -133,8 +137,20 @@ you actually got alerted on.
   as `<SYMBOL>-EQ`. Keep it liquid; the screener already filters out
   20-day average volume below 200k shares.
 - **Budget / risk**: `MAX_BUDGET`, `RISK_PER_TRADE_PCT`, `MAX_PICKS` env
-  vars — no redeploy needed on Railway, just edit and the next run picks
-  it up.
+  vars — no redeploy needed on Railway, just edit and the next scheduled
+  run picks it up (each of the three daily phases is a separate process,
+  so it reads whatever value is currently set at *that* moment).
+  **Best time to change it: before ~08:30 IST**, ahead of the pre-market
+  watchlist run, and then leave it alone until after the ~15:40 summary.
+  Since watchlist/confirmation/summary each re-read the env var
+  independently, changing `MAX_BUDGET` between the 08:45 watchlist and
+  the 09:35 confirmation would make the confirmation message's quantity
+  disagree with what the watchlist already told you for the same stock —
+  harmless (the confirmation's number is the one that's current and
+  "real"), but confusing if you're comparing the two messages. Every
+  watchlist run also logs the active `MAX_BUDGET`/`RISK_PER_TRADE_PCT`/
+  `MAX_PICKS` values, so you can check Railway's logs to confirm exactly
+  what was in effect for a given day's run.
 - **Strategy**: the setup logic lives in `src/screener.py::evaluate`
   (which stocks qualify) and `src/strategy.py::build_plan` (entry/stop/
   target math). Swap in your own rules (VWAP, ORB, a specific indicator)

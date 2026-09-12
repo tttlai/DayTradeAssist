@@ -16,7 +16,7 @@ edge — see README for how to swap in your own rules.
 import csv
 from dataclasses import dataclass
 
-from . import config, indicators
+from . import config, indicators, risk
 
 
 @dataclass
@@ -109,4 +109,22 @@ def build_watchlist(api, max_picks=None) -> list[Candidate]:
             candidates.append(cand)
 
     candidates.sort(key=lambda c: c.score, reverse=True)
-    return candidates[:max_picks]
+
+    # Drop anything your budget can't actually buy at least 1 share of,
+    # *before* picking the top N -- otherwise a high-priced stock could
+    # take a slot and show up with Qty 0. Uses the configured MAX_PICKS
+    # (not the eventual, possibly-smaller, final count) as a conservative
+    # divisor, so anything that passes this filter is guaranteed >=1 share
+    # once real position sizing runs (which divides budget by a count
+    # that's never larger than max_picks).
+    price_ceiling = risk.min_affordable_price(max_picks)
+    affordable = [c for c in candidates if c.last_close <= price_ceiling]
+    dropped = len(candidates) - len(affordable)
+    if dropped:
+        print(
+            f"[screener] Dropped {dropped} candidate(s) priced above your "
+            f"per-pick budget (Rs {price_ceiling:,.0f} at {max_picks} picks): "
+            + ", ".join(c.symbol for c in candidates if c.last_close > price_ceiling)
+        )
+
+    return affordable[:max_picks]

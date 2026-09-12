@@ -20,7 +20,7 @@ import argparse
 import time
 from collections import defaultdict
 
-from . import config, screener, strategy, tradesim
+from . import config, risk, screener, strategy, tradesim
 from .angel_api import AngelAPI
 
 LOOKBACK = 25  # matches indicators.* minimum candle requirements
@@ -93,7 +93,9 @@ def run_backtest(days=60, max_picks=None):
                 day_candidates.append(cand)
 
         day_candidates.sort(key=lambda c: c.score, reverse=True)
-        picks = day_candidates[:max_picks]
+        price_ceiling = risk.min_affordable_price(max_picks)
+        affordable = [c for c in day_candidates if c.last_close <= price_ceiling]
+        picks = affordable[:max_picks]
 
         for cand in picks:
             plan = strategy.build_plan(cand, len(picks))
