@@ -7,13 +7,13 @@ an order — the assistant is signal-only by design.
 """
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pyotp
 import requests
 from SmartApi import SmartConnect
 
-from . import config
+from . import config, timeutil
 
 
 class AngelAPI:
@@ -77,7 +77,7 @@ class AngelAPI:
 
     def get_daily_candles(self, token: str, days: int = 40):
         """Returns list of [timestamp, open, high, low, close, volume]."""
-        to_date = datetime.now()
+        to_date = timeutil.now_ist()
         from_date = to_date - timedelta(days=days * 2)  # buffer for weekends/holidays
         params = {
             "exchange": "NSE",
@@ -92,8 +92,8 @@ class AngelAPI:
         return result.get("data", [])[-days:]
 
     def get_intraday_candles(self, token: str, interval="FIFTEEN_MINUTE"):
-        """Today's intraday candles, used for opening-range confirmation."""
-        today = datetime.now()
+        """Today's (IST) intraday candles, used for confirmation + summary."""
+        today = timeutil.now_ist()
         from_date = today.replace(hour=9, minute=15, second=0, microsecond=0)
         params = {
             "exchange": "NSE",

@@ -1,6 +1,4 @@
-from datetime import datetime
-
-from . import config
+from . import config, timeutil
 
 DISCLAIMER = (
     "_Educational/personal use only. Not SEBI-registered investment advice. "
@@ -10,7 +8,7 @@ DISCLAIMER = (
 
 
 def format_watchlist(plans) -> str:
-    today = datetime.now().strftime("%d %b %Y")
+    today = timeutil.now_ist().strftime("%d %b %Y")
     lines = [
         f"*Day Trading Watchlist — {today}*",
         f"Budget: ₹{config.MAX_BUDGET:,.0f} | Risk/trade: {config.RISK_PER_TRADE_PCT*100:.1f}% | Square-off: {config.SQUARE_OFF_TIME}",
@@ -37,7 +35,7 @@ def format_watchlist(plans) -> str:
 
 
 def format_confirmation(plans) -> str:
-    now = datetime.now().strftime("%H:%M")
+    now = timeutil.now_ist().strftime("%H:%M")
     lines = [f"*Confirmation Check — {now} IST*", ""]
 
     actionable = [p for p in plans if p.status == "ENTER NOW"]
@@ -59,5 +57,39 @@ def format_confirmation(plans) -> str:
         lines.append(f"_Not triggered: {names}_")
         lines.append("")
 
+    lines.append(DISCLAIMER)
+    return "\n".join(lines)
+
+
+def format_daily_summary(results) -> str:
+    """results: list of (TradePlan, tradesim.SimResult, pnl) for trades that
+    were actually confirmed ('ENTER NOW') today."""
+    today = timeutil.now_ist().strftime("%d %b %Y")
+    lines = [f"*End of Day Summary — {today}*", ""]
+
+    if not results:
+        lines.append("No trades were confirmed today, so there's nothing to summarize.")
+        lines.append("")
+        lines.append(DISCLAIMER)
+        return "\n".join(lines)
+
+    total_pnl = 0.0
+    for plan, sim, trade_pnl in results:
+        total_pnl += trade_pnl
+        emoji = "✅" if trade_pnl > 0 else ("❌" if trade_pnl < 0 else "➖")
+        lines.append(f"{emoji} *{plan.symbol}* ({plan.direction}) — {sim.outcome}")
+        lines.append(
+            f"  Entry ₹{plan.entry_trigger} → Exit ₹{sim.exit_price} × {plan.quantity} = ₹{trade_pnl:,.0f}"
+        )
+        lines.append("")
+
+    verdict = "profit" if total_pnl > 0 else ("loss" if total_pnl < 0 else "breakeven")
+    lines.append(f"*If you followed every signal exactly: ₹{total_pnl:,.0f} {verdict}*")
+    lines.append("")
+    lines.append(
+        "_Hypothetical only — assumes fills at the exact alerted levels with no "
+        "slippage, brokerage, or taxes. Your actual result will differ._"
+    )
+    lines.append("")
     lines.append(DISCLAIMER)
     return "\n".join(lines)

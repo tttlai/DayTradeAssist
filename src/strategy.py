@@ -14,13 +14,11 @@ Two stages, matching the two scheduled runs described in the README:
     are promoted to "enter now"; the rest are marked "no trigger — skip."
 """
 from dataclasses import dataclass
-from datetime import datetime, time as dtime
 
 from . import config, indicators, risk
 from .screener import Candidate
 
 TARGET_R_MULTIPLE = 2.0  # target = 2x the risk (stop distance)
-MARKET_OPEN = dtime(9, 15)
 MARKET_MINUTES = 375  # 9:15 to 15:30
 
 
@@ -34,6 +32,8 @@ class TradePlan:
     quantity: int
     square_off_time: str
     status: str  # "WATCH" or "ENTER NOW" or "NO TRIGGER"
+    token: str = ""
+    entered_at: str = ""  # "HH:MM" IST, set once status becomes "ENTER NOW"
 
 
 def build_plan(cand: Candidate, num_picks: int, status="WATCH") -> TradePlan:
@@ -57,6 +57,7 @@ def build_plan(cand: Candidate, num_picks: int, status="WATCH") -> TradePlan:
         quantity=qty,
         square_off_time=config.SQUARE_OFF_TIME,
         status=status,
+        token=cand.token,
     )
 
 

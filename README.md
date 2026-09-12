@@ -3,9 +3,11 @@
 A personal, signal-only day-trading assistant for the Indian (NSE) market.
 Every morning it screens a fixed universe of liquid stocks, sends you a
 pre-market watchlist on Telegram with entry/stop-loss/target levels sized to
-your budget, then re-checks intraday and tells you which (if any) actually
-triggered. **You place every order yourself in your Angel One app — this
-tool never places, modifies, or cancels an order.**
+your budget, re-checks intraday and tells you which (if any) actually
+triggered, then reports what your hypothetical P&L for the day would have
+been if you'd followed every signal exactly. **You place every order
+yourself in your Angel One app — this tool never places, modifies, or
+cancels an order.**
 
 ## Important — read before using
 
@@ -26,7 +28,7 @@ tool never places, modifies, or cancels an order.**
 
 ## How it works
 
-Two phases, one Railway service, one cron schedule:
+Three phases, one Railway service, one cron schedule:
 
 1. **Watchlist (~08:45 IST)** — pulls 30 days of daily candles for each
    stock in `data/universe.csv` (Nifty 50 by default), computes ATR(14),
@@ -40,6 +42,12 @@ Two phases, one Railway service, one cron schedule:
    stock is promoted to "ENTER NOW" only if price has actually crossed its
    trigger *and* today's volume is running hot vs its normal pace. Everything
    else is marked "no trigger — skip."
+3. **End-of-day summary (~15:40 IST)** — for whatever got confirmed in step
+   2, replays the real 15-minute intraday candles from your alerted entry
+   time through square-off to see which was actually touched first, the
+   stop-loss or the target (or neither, in which case it uses the
+   square-off-time price). Reports the hypothetical P&L per trade and the
+   day's total, had you followed every signal exactly.
 
 Every message repeats your mandatory square-off time (`SQUARE_OFF_TIME`,
 default 15:15) since this tool only ever proposes intraday (MIS) trades.
@@ -73,7 +81,26 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in your credentials
 python -m src.main --mode watchlist   # force the pre-market report now
 python -m src.main --mode confirm     # force the confirmation check now
+python -m src.main --mode summary     # force the end-of-day P&L summary now
 ```
+
+### Backtesting the screener first (recommended before risking real money)
+
+```bash
+python -m src.backtest --days 60
+```
+
+Replays the screener's exact rules against the last 60 trading days of
+daily candles for your universe and prints win rate, total/average P&L,
+and max drawdown. **Read the caveat in `src/backtest.py`'s docstring**:
+it uses daily OHLC, not real intraday sequencing, so when a day's range
+touches both the stop-loss and the target it can't tell which happened
+first and conservatively assumes the stop — results are a rough,
+pessimistically-biased lower bound, not a faithful replay. It exists to
+catch an obviously broken or negative-expectancy setup before you trade
+it live, not to prove an edge. The live end-of-day summary (above) is
+the accurate version, since it uses real 15-minute candles for trades
+you actually got alerted on.
 
 ### 4. Deploy to Railway
 
@@ -84,17 +111,19 @@ python -m src.main --mode confirm     # force the confirmation check now
    them anytime without touching code to change your budget day to day).
 3. **Attach a Volume** to the service, mounted at `/app/data`. This is
    required — it's how the watchlist picked at 08:45 is remembered when the
-   09:35 confirmation run happens in a separate container invocation, and
-   how the scrip-master cache avoids re-downloading every run.
+   09:35 confirmation and 15:40 summary runs happen in separate container
+   invocations, and how the scrip-master cache avoids re-downloading every
+   run.
 4. Under **Settings → Cron Schedule**, set:
    ```
-   */5 3-4 * * 1-5
+   */5 3-10 * * 1-5
    ```
-   This runs the service every 5 minutes between 03:00–04:59 UTC
-   (= 08:30–10:29 IST) on weekdays. `src/main.py --mode auto` (the default
-   start command, already set in `railway.toml`) figures out on each run
-   whether it's watchlist time, confirmation time, or nothing to do, and
-   won't send the same report twice in a day.
+   This runs the service every 5 minutes between 03:00–10:59 UTC
+   (= 08:30–16:29 IST) on weekdays — covering the 08:45 watchlist, 09:35
+   confirmation, and 15:40 summary windows in one schedule. `src/main.py
+   --mode auto` (the default start command, already set in `railway.toml`)
+   figures out on each run which of the three to do, if any, and won't
+   send the same report twice in a day.
 5. Trigger a manual deploy/run once to confirm you get a Telegram message
    (or check the deploy logs).
 
@@ -116,14 +145,18 @@ python -m src.main --mode confirm     # force the confirmation check now
 ```
 src/
   angel_api.py   Read-only SmartAPI wrapper (login, quotes, candles)
+  timeutil.py    IST-aware clock helpers (containers run in UTC)
   indicators.py  ATR / RSI / volume helpers over OHLCV candles
   screener.py    Universe scan -> ranked candidate setups
   strategy.py    Candidate -> entry/stop/target, + intraday confirmation
   risk.py        Position sizing from budget + risk-per-trade
+  tradesim.py    Walks OHLCV candles to see if a stop/target was hit
+  backtest.py    Historical replay of the screener over daily candles
   report.py      Telegram message formatting
   notify.py      Telegram send
   main.py        Orchestration + auto time-window scheduling
 data/
   universe.csv       Stocks to scan (edit this to change coverage)
-  today_state.json   Runtime state (watchlist + sent flags), gitignored
+  today_state.json   Runtime state (watchlist + confirmed trades + sent
+                      flags), gitignored
 ```
