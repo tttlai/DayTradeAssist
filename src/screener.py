@@ -12,6 +12,10 @@ For each stock in the universe we look for one of two clean setups:
 Each candidate gets a numeric score so we can rank and keep only the
 strongest MAX_PICKS setups. This is a starting heuristic, not a proven
 edge — see README for how to swap in your own rules.
+
+Daily candles come from src/nse_data.py (free, no login) rather than
+Angel One -- this phase doesn't need live data, so there's no reason to
+spend an Angel login (and its tighter rate limits) on it.
 """
 import csv
 from dataclasses import dataclass
@@ -95,17 +99,21 @@ def evaluate(symbol: str, candles) -> Candidate | None:
     return None
 
 
-def build_watchlist(api, max_picks=None) -> list[Candidate]:
+def build_watchlist(token_lookup, history, max_picks=None) -> list[Candidate]:
+    """token_lookup: callable(symbol) -> Angel instrument token, needed
+    later for the live confirmation/summary phases (a lookup against
+    Angel's public scrip master, not a login). history: {symbol: candles}
+    from nse_data.fetch_daily_history() -- no Angel login involved in
+    getting the actual OHLCV data at all."""
     max_picks = max_picks or config.MAX_PICKS
     candidates = []
     for symbol in load_universe():
-        token = api.get_token(symbol)
-        if not token:
+        candles = history.get(symbol)
+        if not candles:
             continue
-        candles = api.get_daily_candles(token, days=30)
         cand = evaluate(symbol, candles)
         if cand:
-            cand.token = token
+            cand.token = token_lookup(symbol) or ""
             candidates.append(cand)
 
     candidates.sort(key=lambda c: c.score, reverse=True)

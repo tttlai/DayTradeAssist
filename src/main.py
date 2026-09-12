@@ -6,10 +6,15 @@ minutes across the market session (see README for the exact cron
 expression). Each invocation looks at the current IST time and today's
 saved state to decide which of three things to do:
 
-  1. WATCHLIST  (~08:45 IST) — pre-market technical screen -> Telegram
-  2. CONFIRM    (~09:35 IST) — intraday trigger/volume check -> Telegram
+  1. WATCHLIST  (~08:45 IST) — pre-market technical screen -> Telegram.
+     Uses NSE's free bhavcopy (src/nse_data.py) for daily OHLCV, NOT an
+     Angel One login -- this phase doesn't need live data, so there's no
+     reason to spend a login against Angel's tighter rate limits on it.
+  2. CONFIRM    (~09:35 IST) — intraday trigger/volume check -> Telegram.
+     Needs live prices, so this one does use Angel One (login required).
   3. SUMMARY    (~15:40 IST) — replays real intraday candles for whatever
-     was confirmed in step 2 to report the hypothetical day's P&L
+     was confirmed in step 2 to report the hypothetical day's P&L. Also
+     uses Angel One, for the same live-data reason as step 2.
 
 Every invocation also checks for a pending /health command sent to the
 bot on Telegram, regardless of the time windows above -- see
@@ -32,7 +37,7 @@ import dataclasses
 import json
 from datetime import time as dtime
 
-from . import config, health, notify, report, strategy, telegram_commands, timeutil, tradesim
+from . import config, health, notify, nse_data, report, screener, strategy, telegram_commands, timeutil, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
@@ -117,17 +122,20 @@ def run_watchlist():
         f"MAX_PICKS={config.MAX_PICKS}"
     )
     state = load_full_state()
+
+    # No Angel One login for this phase -- daily OHLCV comes from NSE's
+    # free bhavcopy (nse_data.py); AngelAPI is only used here for its
+    # scrip-master token lookup, which doesn't require a session either.
     api = AngelAPI()
-    api.login()
-    try:
-        candidates = build_watchlist(api)
-        plans = [strategy.build_plan(c, len(candidates)) for c in candidates]
-        notify.send_message(report.format_watchlist(plans))
-        state["candidates"] = [dataclasses.asdict(c) for c in candidates]
-        state["sent_watchlist"] = True
-        save_full_state(state)
-    finally:
-        api.logout()
+    symbols = screener.load_universe()
+    history = nse_data.fetch_daily_history(symbols, days=30)
+    candidates = build_watchlist(api.get_token, history)
+
+    plans = [strategy.build_plan(c, len(candidates)) for c in candidates]
+    notify.send_message(report.format_watchlist(plans))
+    state["candidates"] = [dataclasses.asdict(c) for c in candidates]
+    state["sent_watchlist"] = True
+    save_full_state(state)
 
 
 def run_confirm():

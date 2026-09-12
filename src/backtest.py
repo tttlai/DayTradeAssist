@@ -13,43 +13,27 @@ summary (`python -m src.main --mode summary`, or the automatic run each
 afternoon) is far more accurate since it replays real 15-minute intraday
 candles for trades you actually got alerted on.
 
+Data comes from NSE's free bhavcopy (src/nse_data.py) -- same source as
+the live pre-market watchlist -- so backtesting needs no Angel One
+credentials at all and can't hit its rate limits.
+
 Usage:
     python -m src.backtest --days 60
 """
 import argparse
-import time
 from collections import defaultdict
 
-from . import config, risk, screener, strategy, tradesim
-from .angel_api import AngelAPI
+from . import config, nse_data, risk, screener, strategy, tradesim
 
 LOOKBACK = 25  # matches indicators.* minimum candle requirements
-RATE_LIMIT_SLEEP = 0.35  # stay comfortably under SmartAPI's historical-data rate limit
-
-
-def fetch_all_history(api, symbols, total_days):
-    history = {}
-    for symbol in symbols:
-        token = api.get_token(symbol)
-        if not token:
-            print(f"  skip {symbol}: no instrument token found")
-            continue
-        candles = api.get_daily_candles(token, days=total_days)
-        if candles:
-            history[symbol] = {
-                "token": token,
-                "sorted": sorted(candles, key=lambda c: c[0]),
-            }
-        time.sleep(RATE_LIMIT_SLEEP)
-    return history
 
 
 def common_dates(history, threshold=0.9):
     """Dates present for at least `threshold` fraction of symbols, so one
     short-history stock doesn't shrink the whole backtest window."""
     counts = defaultdict(int)
-    for v in history.values():
-        for c in v["sorted"]:
+    for candles in history.values():
+        for c in candles:
             counts[c[0]] += 1
     n = len(history)
     if n == 0:
@@ -61,13 +45,9 @@ def run_backtest(days=60, max_picks=None):
     max_picks = max_picks or config.MAX_PICKS
     symbols = screener.load_universe()
 
-    print(f"Fetching daily history for {len(symbols)} symbols...")
-    api = AngelAPI()
-    api.login()
-    try:
-        history = fetch_all_history(api, symbols, total_days=days + LOOKBACK + 10)
-    finally:
-        api.logout()
+    print(f"Fetching {days + LOOKBACK + 10} days of NSE bhavcopy history for {len(symbols)} symbols...")
+    history = nse_data.fetch_daily_history(symbols, days=days + LOOKBACK + 10)
+    history = {s: c for s, c in history.items() if c}  # drop symbols with no data at all
 
     dates = common_dates(history)
     if len(dates) < LOOKBACK + 2:
@@ -76,20 +56,19 @@ def run_backtest(days=60, max_picks=None):
 
     eval_dates = dates[LOOKBACK:][-days:]
     by_date_candles = {
-        symbol: {c[0]: c for c in v["sorted"]} for symbol, v in history.items()
+        symbol: {c[0]: c for c in candles} for symbol, candles in history.items()
     }
 
     print(f"Replaying {len(eval_dates)} trading days...")
     trades = []
     for date in eval_dates:
         day_candidates = []
-        for symbol, v in history.items():
-            prior = [c for c in v["sorted"] if c[0] < date]
+        for symbol, candles in history.items():
+            prior = [c for c in candles if c[0] < date]
             if len(prior) < LOOKBACK:
                 continue
             cand = screener.evaluate(symbol, prior)
             if cand:
-                cand.token = v["token"]
                 day_candidates.append(cand)
 
         day_candidates.sort(key=lambda c: c.score, reverse=True)

@@ -25,13 +25,19 @@ cancels an order.**
   edge you want to encode.
 - Angel One SmartAPI credentials are used **read-only** (quotes + candles).
   Nothing in this codebase calls an order-placement endpoint.
+- Only the intraday confirmation and end-of-day summary phases actually
+  log into Angel One. The pre-market watchlist and the backtest both use
+  NSE's free, login-free bhavcopy instead (see "Data sources" below) —
+  neither needs live data, so there's no reason to spend an Angel login,
+  and its stricter rate limits, on them.
 
 ## How it works
 
 Three phases, one Railway service, one cron schedule:
 
-1. **Watchlist (~08:45 IST)** — pulls 30 days of daily candles for each
-   stock in `data/universe.csv` (Nifty 50 by default), computes ATR(14),
+1. **Watchlist (~08:45 IST)** — pulls 30 days of daily candles (from NSE's
+   free bhavcopy, no Angel login) for each stock in `data/universe.csv`
+   (Nifty 50 by default), computes ATR(14),
    RSI(14), and 20-day swing high/low, and shortlists up to `MAX_PICKS`
    setups where price is within 1.5% of its 20-day high (bullish breakout
    watch) or low (bearish breakdown watch) with a rising 5-day volume
@@ -55,6 +61,34 @@ Three phases, one Railway service, one cron schedule:
 
 Every message repeats your mandatory square-off time (`SQUARE_OFF_TIME`,
 default 15:15) since this tool only ever proposes intraday (MIS) trades.
+
+## Data sources
+
+Two different sources feed this tool, split by whether the phase actually
+needs *live* data:
+
+| Phase | Needs live data? | Source | Login required? |
+|---|---|---|---|
+| Watchlist (daily screen) | No — works off yesterday's close | NSE bhavcopy (`src/nse_data.py`) | No |
+| Backtest | No — historical daily candles | NSE bhavcopy (`src/nse_data.py`) | No |
+| Confirmation | Yes — live price/volume | Angel One SmartAPI | Yes |
+| End-of-day summary | Yes — real intraday candles | Angel One SmartAPI | Yes |
+| `/health` check | Checks both | Both | Attempts an Angel login |
+
+NSE publishes a free "bhavcopy" file each trading day with end-of-day
+OHLCV for every listed stock — no registration, no API key, no rate
+limit worth worrying about for once-a-day use. This cuts your daily
+Angel One logins roughly in half (down to just the confirmation and
+summary runs) and means the backtest needs no Angel credentials at all.
+
+Two things worth knowing about `src/nse_data.py`:
+- **NSE's CDN silently hangs connections without a browser-like
+  User-Agent header** (no clean error, just a timeout) — already handled,
+  but if NSE ever changes their anti-bot behavior, that's the symptom.
+- **NSE occasionally changes their bhavcopy URL format** (they have
+  before). If the watchlist starts reporting "No qualifying setups" every
+  day for no clear reason, check `BHAVCOPY_URL` in `src/nse_data.py`
+  against NSE's current archives page.
 
 ## Setup
 
@@ -193,6 +227,7 @@ are cheap since they exit in under a second when there's nothing pending.
 ```
 src/
   angel_api.py   Read-only SmartAPI wrapper (login, quotes, candles)
+  nse_data.py    Free, login-free NSE bhavcopy fetch (daily OHLCV)
   timeutil.py    IST-aware clock helpers (containers run in UTC)
   indicators.py  ATR / RSI / volume helpers over OHLCV candles
   screener.py    Universe scan -> ranked candidate setups
