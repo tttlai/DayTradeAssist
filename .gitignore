@@ -6,3 +6,4 @@ venv/
 *.log
 data/scrip_master_cache.json
 data/today_state.json
+data/telegram_state.json

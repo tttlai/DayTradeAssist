@@ -11,6 +11,15 @@ saved state to decide which of three things to do:
   3. SUMMARY    (~15:40 IST) — replays real intraday candles for whatever
      was confirmed in step 2 to report the hypothetical day's P&L
 
+Every invocation also checks for a pending /health command sent to the
+bot on Telegram, regardless of the time windows above -- see
+handle_commands(). Since this isn't a persistent server, a reply only
+arrives on the next cron tick, not instantly; if you want /health to work
+outside the market-hours cron schedule (evenings, weekends), widen the
+Railway cron expression to fire more often across the full day/week (see
+README) -- the extra runs are cheap since they no-op immediately when
+there's nothing pending.
+
 This "one service, auto-detect" design avoids relying on multiple Railway
 services staying in sync — everything reads/writes one state file on the
 service's attached volume (see README: you must attach a Railway Volume
@@ -23,11 +32,12 @@ import dataclasses
 import json
 from datetime import time as dtime
 
-from . import config, notify, report, strategy, timeutil, tradesim
+from . import config, health, notify, report, strategy, telegram_commands, timeutil, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
 STATE_FILE = config.ROOT_DIR / "data" / "today_state.json"
+TELEGRAM_STATE_FILE = config.ROOT_DIR / "data" / "telegram_state.json"
 
 WATCHLIST_WINDOW = (dtime(8, 40), dtime(9, 5))
 CONFIRM_WINDOW = (dtime(9, 20), dtime(9, 45))
@@ -61,6 +71,43 @@ def load_full_state() -> dict:
 def save_full_state(state: dict):
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     STATE_FILE.write_text(json.dumps(state))
+
+
+def _load_last_update_id() -> int:
+    """Telegram update IDs are a single ever-increasing sequence for the
+    bot, not tied to any trading day -- stored separately from
+    today_state.json so it isn't wiped by the daily reset."""
+    if not TELEGRAM_STATE_FILE.exists():
+        return 0
+    return json.loads(TELEGRAM_STATE_FILE.read_text()).get("last_update_id", 0)
+
+
+def _save_last_update_id(update_id: int):
+    TELEGRAM_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TELEGRAM_STATE_FILE.write_text(json.dumps({"last_update_id": update_id}))
+
+
+def handle_commands():
+    """Checks for anything you've sent the bot since the last run and
+    replies. Currently understands /health (and /status as an alias)."""
+    last_id = _load_last_update_id()
+    messages, new_last_id = telegram_commands.get_new_messages(last_id)
+
+    for text in messages:
+        cmd = text.split("@")[0].strip().lower()
+        if cmd in ("/health", "/status"):
+            print("[health] /health command received, running check")
+            notify.send_message(health.run_health_check())
+        elif cmd == "/start":
+            notify.send_message(
+                "DayTradeAssist is connected. Send /health anytime to check "
+                "Angel One + Railway status."
+            )
+        else:
+            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health")
+
+    if new_last_id != last_id:
+        _save_last_update_id(new_last_id)
 
 
 def run_watchlist():
@@ -148,6 +195,8 @@ def run_summary():
 
 def run_auto():
     """Decide what to do based on current IST time + today's state."""
+    handle_commands()
+
     t = timeutil.now_ist().time()
     state = load_full_state()
 
@@ -171,7 +220,9 @@ def run_auto():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--mode", choices=["watchlist", "confirm", "summary", "auto"], default="auto"
+        "--mode",
+        choices=["watchlist", "confirm", "summary", "health", "auto"],
+        default="auto",
     )
     args = parser.parse_args()
 
@@ -181,6 +232,8 @@ def main():
         run_confirm()
     elif args.mode == "summary":
         run_summary()
+    elif args.mode == "health":
+        notify.send_message(health.run_health_check())
     else:
         run_auto()
 

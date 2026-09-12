@@ -86,6 +86,7 @@ cp .env.example .env   # fill in your credentials
 python -m src.main --mode watchlist   # force the pre-market report now
 python -m src.main --mode confirm     # force the confirmation check now
 python -m src.main --mode summary     # force the end-of-day P&L summary now
+python -m src.main --mode health      # run the health check immediately
 ```
 
 ### Backtesting the screener first (recommended before risking real money)
@@ -131,6 +132,37 @@ you actually got alerted on.
 5. Trigger a manual deploy/run once to confirm you get a Telegram message
    (or check the deploy logs).
 
+### Health check via Telegram
+
+Send **`/health`** (or `/status`) to your bot anytime and it'll reply with
+two independent checks:
+
+```
+*Health Check*
+
+✅ Angel One reachable — HTTP 200
+✅ Angel One login — login OK
+✅ Railway service is up — this reply is proof the current run executed
+```
+
+The first line hits Angel's public endpoint with no credentials, so it
+tells you whether *their* servers are up at all. The second actually logs
+in with your API key/PIN/TOTP, so a ❌ there while the first line is ✅
+means Angel is fine but your credentials or IP whitelist need attention.
+Getting any reply at all is itself proof the Railway service is alive —
+that's not a separate network call, just what "you got this message"
+already means.
+
+**Important limitation**: this isn't a persistent server listening for
+messages in real time — it's the same cron-triggered script, which also
+checks "did the user send me anything?" on every invocation. So a reply
+lands on the *next* cron tick after you send `/health`, not instantly. If
+you only run the cron during market hours (`*/5 3-10 * * 1-5`, per above),
+`/health` will only get answered during that window. To check health
+anytime — evenings, weekends — widen the cron schedule to run every 5-10
+minutes across the full day/week (e.g. `*/10 * * * *`); the extra runs
+are cheap since they exit in under a second when there's nothing pending.
+
 ## Customizing
 
 - **Universe**: edit `data/universe.csv` — any NSE symbol Angel One lists
@@ -168,11 +200,15 @@ src/
   risk.py        Position sizing from budget + risk-per-trade
   tradesim.py    Walks OHLCV candles to see if a stop/target was hit
   backtest.py    Historical replay of the screener over daily candles
+  health.py      /health check: Angel One reachability + login
+  telegram_commands.py  Polls Telegram for messages sent to the bot
   report.py      Telegram message formatting
   notify.py      Telegram send
-  main.py        Orchestration + auto time-window scheduling
+  main.py        Orchestration + auto time-window scheduling + commands
 data/
-  universe.csv       Stocks to scan (edit this to change coverage)
-  today_state.json   Runtime state (watchlist + confirmed trades + sent
-                      flags), gitignored
+  universe.csv         Stocks to scan (edit this to change coverage)
+  today_state.json     Runtime state (watchlist + confirmed trades + sent
+                        flags), resets daily, gitignored
+  telegram_state.json  Last processed Telegram update ID, never resets,
+                        gitignored
 ```
