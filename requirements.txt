@@ -1,0 +1,8 @@
+smartapi-python==1.5.5
+pyotp==2.9.0
+pandas==2.2.2
+numpy==1.26.4
+requests==2.32.3
+python-dotenv==1.0.1
+logzero==1.7.0
+websocket-client==1.8.0

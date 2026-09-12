@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log
+data/scrip_master_cache.json
+data/today_state.json
