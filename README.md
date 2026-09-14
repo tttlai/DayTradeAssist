@@ -51,7 +51,12 @@ Three phases, one Railway service, one cron schedule:
    re-checks each watchlist stock's live price and today's volume pace. A
    stock is promoted to "ENTER NOW" only if price has actually crossed its
    trigger *and* today's volume is running hot vs its normal pace. Everything
-   else is marked "no trigger — skip."
+   else is marked "no trigger — skip" (normal — most setups just don't
+   follow through, this is expected). If the live price fetch itself fails
+   for a stock, that's flagged separately with a ⚠️ warning at the top of
+   the message, distinct from a normal no-trigger, since it points to an
+   Angel One API/token problem worth investigating rather than the market
+   just not cooperating.
 3. **End-of-day summary (~15:40 IST)** — for whatever got confirmed in step
    2, replays the real 15-minute intraday candles from your alerted entry
    time through square-off to see which was actually touched first, the

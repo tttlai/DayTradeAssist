@@ -39,7 +39,16 @@ def format_confirmation(plans) -> str:
     lines = [f"*Confirmation Check — {now} IST*", ""]
 
     actionable = [p for p in plans if p.status == "ENTER NOW"]
-    skipped = [p for p in plans if p.status != "ENTER NOW"]
+    no_data = [p for p in plans if p.status == "NO DATA"]
+    no_trigger = [p for p in plans if p.status not in ("ENTER NOW", "NO DATA")]
+
+    # Surfaced first and separately from the normal not-triggered list --
+    # this means the live price fetch itself failed for that stock (an
+    # API/token problem worth investigating), not just a quiet market day.
+    if no_data:
+        names = ", ".join(p.symbol for p in no_data)
+        lines.append(f"⚠️ *Could not fetch live price for: {names}* — check Angel One connectivity.")
+        lines.append("")
 
     if actionable:
         for p in actionable:
@@ -52,9 +61,9 @@ def format_confirmation(plans) -> str:
         lines.append("No watchlist stock has triggered with volume confirmation yet.")
         lines.append("")
 
-    if skipped:
-        names = ", ".join(f"{p.symbol} ({p.status.lower()})" for p in skipped)
-        lines.append(f"_Not triggered: {names}_")
+    if no_trigger:
+        names = ", ".join(p.symbol for p in no_trigger)
+        lines.append(f"_Not triggered (normal, no data issue): {names}_")
         lines.append("")
 
     lines.append(DISCLAIMER)

@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 *.log
+logs/
 data/scrip_master_cache.json
 data/today_state.json
 data/telegram_state.json

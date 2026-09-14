@@ -68,6 +68,7 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan) -> TradePlan:
     """Intraday re-check: did price actually cross the trigger with volume?"""
     ltp = api.get_ltp(cand.symbol, cand.token)
     if ltp is None:
+        print(f"[confirm] {cand.symbol}: get_ltp returned None -- Angel One API/token issue?")
         plan.status = "NO DATA"
         return plan
 
