@@ -2,5 +2,10 @@
 builder = "NIXPACKS"
 
 [deploy]
-startCommand = "python -m src.main --mode auto"
-restartPolicyType = "NEVER"
+# Persistent service, NOT a Railway Cron Schedule -- Cron Schedule mode
+# tears down the filesystem between every trigger with no way to attach
+# a Volume, which breaks state persistence across the watchlist ->
+# confirmation -> summary phases (confirmed empirically). --mode serve
+# runs its own internal loop instead; see src/main.py's module docstring.
+startCommand = "python -m src.main --mode serve"
+restartPolicyType = "ON_FAILURE"

@@ -1,10 +1,20 @@
 """
 Entry point.
 
-Runs as ONE Railway service on a single cron schedule that fires every few
-minutes across the market session (see README for the exact cron
-expression). Each invocation looks at the current IST time and today's
-saved state to decide which of three things to do:
+Runs as ONE persistently-running Railway service (--mode serve), NOT a
+Railway Cron Schedule. This matters: Railway's Cron Schedule mode tears
+down the container's filesystem between every trigger with no way to
+attach persistent storage (Volumes are unavailable in that mode -- along
+with replicas, serverless, and a configurable restart policy -- confirmed
+empirically, not just undocumented). Since this app needs the 08:45
+watchlist's output to still be there when the 09:35 confirmation run
+checks for it an hour later, cron-per-invocation doesn't work here.
+
+Instead, --mode serve runs an infinite loop that checks the clock every
+LOOP_INTERVAL_SECONDS and decides which of three things to do, all within
+the SAME continuously-running process -- so state just lives in a local
+JSON file on that process's own disk for as long as it keeps running,
+no Volume needed:
 
   1. WATCHLIST  (~08:45 IST) — pre-market technical screen -> Telegram.
      Uses NSE's free bhavcopy (src/nse_data.py) for daily OHLCV, NOT an
@@ -16,25 +26,24 @@ saved state to decide which of three things to do:
      was confirmed in step 2 to report the hypothetical day's P&L. Also
      uses Angel One, for the same live-data reason as step 2.
 
-Every invocation also checks for a pending /health command sent to the
-bot on Telegram, regardless of the time windows above -- see
-handle_commands(). Since this isn't a persistent server, a reply only
-arrives on the next cron tick, not instantly; if you want /health to work
-outside the market-hours cron schedule (evenings, weekends), widen the
-Railway cron expression to fire more often across the full day/week (see
-README) -- the extra runs are cheap since they no-op immediately when
-there's nothing pending.
+Every loop iteration also checks for a pending /health command sent to
+the bot on Telegram (see handle_commands()) -- since the loop runs
+continuously, a reply arrives within LOOP_INTERVAL_SECONDS, any time of
+day, any day of the week, with no cron schedule to widen.
 
-This "one service, auto-detect" design avoids relying on multiple Railway
-services staying in sync — everything reads/writes one state file on the
-service's attached volume (see README: you must attach a Railway Volume
-mounted at /app/data, otherwise state won't survive between runs).
+The one residual risk versus a Volume-backed design: if the service gets
+redeployed (a git push, a Railway settings change) in the middle of a
+trading day, that day's in-progress state is lost when the old container
+is torn down, same as today's watchlist->confirmation gap would be if it
+happened right then. Avoid redeploying during market hours when possible.
 
-For local testing, --mode forces a specific action regardless of time.
+For local testing / one-off runs, --mode forces a specific single action
+and exits immediately instead of looping.
 """
 import argparse
 import dataclasses
 import json
+import time
 from datetime import time as dtime
 
 from . import config, health, notify, nse_data, report, screener, strategy, telegram_commands, timeutil, tradesim
@@ -47,6 +56,8 @@ TELEGRAM_STATE_FILE = config.ROOT_DIR / "data" / "telegram_state.json"
 WATCHLIST_WINDOW = (dtime(8, 40), dtime(9, 5))
 CONFIRM_WINDOW = (dtime(9, 20), dtime(9, 45))
 SUMMARY_WINDOW = (dtime(15, 35), dtime(16, 0))
+
+LOOP_INTERVAL_SECONDS = 30
 
 
 def _today_key() -> str:
@@ -142,10 +153,21 @@ def run_confirm():
     state = load_full_state()
     candidates = [Candidate(**c) for c in state.get("candidates", [])]
     if not candidates:
-        notify.send_message(
-            "*Confirmation Check*\n\nNo watchlist found for today — did the "
-            "pre-market run execute? Nothing to confirm."
-        )
+        if state.get("sent_watchlist"):
+            # The watchlist ran fine and genuinely found nothing worth
+            # watching today -- a normal outcome, not a problem.
+            notify.send_message(
+                "*Confirmation Check*\n\nToday's watchlist was empty (no "
+                "qualifying setups) -- nothing to confirm."
+            )
+        else:
+            # The watchlist never ran at all -- worth investigating
+            # (deploy/state-persistence/scheduling issue).
+            notify.send_message(
+                "*Confirmation Check*\n\n⚠️ No watchlist found for today, and "
+                "it doesn't look like the pre-market run executed -- check "
+                "Railway logs/deployment status."
+            )
         state["sent_confirm"] = True
         save_full_state(state)
         return
@@ -225,11 +247,25 @@ def run_auto():
         print(f"[auto] {t} IST - nothing to do (outside windows or already sent today)")
 
 
+def run_serve_loop():
+    """The persistent-service entry point (see module docstring for why
+    this replaced Railway's Cron Schedule). Runs forever, checking the
+    clock every LOOP_INTERVAL_SECONDS; a crash in one iteration is logged
+    and swallowed so the loop itself never dies from it."""
+    print(f"[serve] Starting persistent loop, checking every {LOOP_INTERVAL_SECONDS}s")
+    while True:
+        try:
+            run_auto()
+        except Exception as e:
+            print(f"[serve] run_auto() raised {e.__class__.__name__}: {e}")
+        time.sleep(LOOP_INTERVAL_SECONDS)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=["watchlist", "confirm", "summary", "health", "auto"],
+        choices=["watchlist", "confirm", "summary", "health", "auto", "serve"],
         default="auto",
     )
     args = parser.parse_args()
@@ -242,6 +278,8 @@ def main():
         run_summary()
     elif args.mode == "health":
         notify.send_message(health.run_health_check())
+    elif args.mode == "serve":
+        run_serve_loop()
     else:
         run_auto()
 

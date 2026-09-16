@@ -33,7 +33,8 @@ cancels an order.**
 
 ## How it works
 
-Three phases, one Railway service, one cron schedule:
+Three phases, one Railway service running as a persistent self-scheduling
+loop (not a Railway Cron Schedule — see the Deploy section for why):
 
 1. **Watchlist (~08:45 IST)** — pulls 30 days of daily candles (from NSE's
    free bhavcopy, no Angel login) for each stock in `data/universe.csv`
@@ -148,28 +149,43 @@ you actually got alerted on.
 
 ### 4. Deploy to Railway
 
+**Do not use Railway's Cron Schedule setting for this service.** Cron
+Schedule mode tears the container's filesystem down between every
+trigger, and — confirmed by actually checking the Settings page, not
+just documentation — offers no way to attach a Volume in that mode
+either (Volumes, replicas, serverless, and a configurable restart policy
+are all unavailable for cron-scheduled services). Since this app needs
+the 08:45 watchlist's output to still exist when the 09:35 confirmation
+run checks for it an hour later, that's fatal to how it works: the
+confirmation run would always find an empty state and report "no
+watchlist found," even on a day the watchlist ran perfectly fine.
+
+Instead, this deploys as a normal **persistent service** that schedules
+itself internally:
+
 1. Push this repo to GitHub, then in Railway: **New Project → Deploy from
    GitHub repo**.
 2. Add all variables from `.env.example` under the service's **Variables**
    tab (this is where `MAX_BUDGET`, `RISK_PER_TRADE_PCT`, etc. live — edit
    them anytime without touching code to change your budget day to day).
-3. **Attach a Volume** to the service, mounted at `/app/data`. This is
-   required — it's how the watchlist picked at 08:45 is remembered when the
-   09:35 confirmation and 15:40 summary runs happen in separate container
-   invocations, and how the scrip-master cache avoids re-downloading every
-   run.
-4. Under **Settings → Cron Schedule**, set:
-   ```
-   */5 3-10 * * 1-5
-   ```
-   This runs the service every 5 minutes between 03:00–10:59 UTC
-   (= 08:30–16:29 IST) on weekdays — covering the 08:45 watchlist, 09:35
-   confirmation, and 15:40 summary windows in one schedule. `src/main.py
-   --mode auto` (the default start command, already set in `railway.toml`)
-   figures out on each run which of the three to do, if any, and won't
-   send the same report twice in a day.
-5. Trigger a manual deploy/run once to confirm you get a Telegram message
-   (or check the deploy logs).
+3. Leave **Settings → Cron Schedule** empty/unset. `railway.toml` already
+   sets the start command to `python -m src.main --mode serve`, which
+   runs its own internal loop (see `src/main.py`'s module docstring) —
+   checking the clock every 30 seconds, all day, every day, and deciding
+   which of the watchlist/confirmation/summary phases (if any) to run.
+   Because it's one continuously-running process, state just lives in a
+   local file on that process's own disk for as long as it keeps running
+   — no Volume needed.
+4. Trigger a manual deploy once to confirm you get a Telegram message
+   (or check the deploy logs) — you should see `[serve] Starting
+   persistent loop...` in the logs shortly after deploy.
+
+**One tradeoff worth knowing**: if you redeploy (a git push, a settings
+change) in the middle of a trading day, that day's in-progress state is
+lost when the old container is torn down — same failure mode as the
+Volume-less cron design had on *every* trigger, just now only on the
+rare occasion you actually redeploy mid-day. Avoid pushing changes
+during market hours when you can.
 
 ### Health check via Telegram
 
@@ -192,15 +208,10 @@ Getting any reply at all is itself proof the Railway service is alive —
 that's not a separate network call, just what "you got this message"
 already means.
 
-**Important limitation**: this isn't a persistent server listening for
-messages in real time — it's the same cron-triggered script, which also
-checks "did the user send me anything?" on every invocation. So a reply
-lands on the *next* cron tick after you send `/health`, not instantly. If
-you only run the cron during market hours (`*/5 3-10 * * 1-5`, per above),
-`/health` will only get answered during that window. To check health
-anytime — evenings, weekends — widen the cron schedule to run every 5-10
-minutes across the full day/week (e.g. `*/10 * * * *`); the extra runs
-are cheap since they exit in under a second when there's nothing pending.
+Since the service runs as a persistent loop (see above) rather than
+Railway's Cron Schedule, `/health` gets checked every ~30 seconds, any
+time of day, any day of the week — no schedule to widen, no waiting for
+a cron tick. A reply should land within about 30 seconds of sending it.
 
 ## Customizing
 
@@ -208,17 +219,14 @@ are cheap since they exit in under a second when there's nothing pending.
   as `<SYMBOL>-EQ`. Keep it liquid; the screener already filters out
   20-day average volume below 200k shares.
 - **Budget / risk**: `MAX_BUDGET`, `RISK_PER_TRADE_PCT`, `MAX_PICKS` env
-  vars — no redeploy needed on Railway, just edit and the next scheduled
-  run picks it up (each of the three daily phases is a separate process,
-  so it reads whatever value is currently set at *that* moment).
-  **Best time to change it: before ~08:30 IST**, ahead of the pre-market
-  watchlist run, and then leave it alone until after the ~15:40 summary.
-  Since watchlist/confirmation/summary each re-read the env var
-  independently, changing `MAX_BUDGET` between the 08:45 watchlist and
-  the 09:35 confirmation would make the confirmation message's quantity
-  disagree with what the watchlist already told you for the same stock —
-  harmless (the confirmation's number is the one that's current and
-  "real"), but confusing if you're comparing the two messages. Every
+  vars. Saving a variable change on Railway triggers a redeploy, which
+  restarts the persistent service — and since state now lives only in
+  that running process (no Volume, see Deploy section), **a mid-day
+  restart loses that day's in-progress watchlist/confirmation state**,
+  the same way an actual crash would. This makes timing your changes
+  more important than it used to be: **change budget/risk settings
+  before ~08:30 IST**, ahead of the pre-market watchlist run, and don't
+  touch them again until after the ~15:40 summary has gone out. Every
   watchlist run also logs the active `MAX_BUDGET`/`RISK_PER_TRADE_PCT`/
   `MAX_PICKS` values, so you can check Railway's logs to confirm exactly
   what was in effect for a given day's run.
