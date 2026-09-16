@@ -42,12 +42,20 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    RSI(14), and 20-day swing high/low, and shortlists up to `MAX_PICKS`
    setups where price is within 1.5% of its 20-day high (bullish breakout
    watch) or low (bearish breakdown watch) with a rising 5-day volume
-   trend. Candidates priced above what `MAX_BUDGET` can actually buy at
-   least 1 share of (split evenly across `MAX_PICKS`) are dropped *before*
-   ranking, even if their setup scores highest — your budget shapes which
-   stocks get proposed, not just how many shares of an already-chosen one.
-   Sends you the watchlist with trigger price, stop-loss (1 ATR), target
-   (2 ATR), and share quantity sized to your budget/risk settings.
+   trend. Stocks with ATR below `MIN_ATR_PCT` (0.8% of price) are dropped
+   as too "sleepy" to move meaningfully intraday; among the rest, higher
+   ATR% nudges the score up. Candidates priced above what `MAX_BUDGET` can
+   actually buy at least 1 share of (split evenly across `MAX_PICKS`) are
+   dropped *before* ranking, even if their setup scores highest — your
+   budget shapes which stocks get proposed, not just how many shares of an
+   already-chosen one. A stock that's hit a circuit limit (High == Low for
+   a whole session) in the last 10 days is flagged with a ⚡ risk note, not
+   scored up or down — it's a caution signal, not something to chase. If
+   today looks like monthly F&O expiry (last Thursday of the month), a
+   ⚠️ warning is added since breakout setups tend to whipsaw more on
+   expiry days. Sends you the watchlist with trigger price, stop-loss
+   (1 ATR), target (2 ATR), and share quantity sized to your budget/risk
+   settings.
 2. **Confirmation (~09:35 IST)**, after the opening range has formed —
    re-checks each watchlist stock's live price and today's volume pace. A
    stock is promoted to "ENTER NOW" only if price has actually crossed its
@@ -234,6 +242,9 @@ a cron tick. A reply should land within about 30 seconds of sending it.
   (which stocks qualify) and `src/strategy.py::build_plan` (entry/stop/
   target math). Swap in your own rules (VWAP, ORB, a specific indicator)
   there — `src/indicators.py` has ATR/RSI/volume helpers to build from.
+  The volatility floor (`MIN_ATR_PCT`), how much ATR% weighs into the
+  score (`ATR_SCORE_WEIGHT`), and the circuit-lock lookback window are
+  constants at the top of `src/screener.py` if you want to tune them.
 
 ## Project layout
 

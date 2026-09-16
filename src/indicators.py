@@ -64,3 +64,18 @@ def prior_swing_high(candles, lookback=20):
 def prior_swing_low(candles, lookback=20):
     l = lows(candles)[:-1][-lookback:]
     return float(np.min(l)) if len(l) else None
+
+
+def had_circuit_lock(candles, lookback=10) -> bool:
+    """A day where High == Low means the stock was pinned at its
+    exchange circuit limit for the whole session -- no trading range at
+    all that day. Detectable from plain OHLC with no extra data: once a
+    stock hits its circuit band, no trade can occur away from that price
+    for the rest of the session, so high and low collapse to the same
+    value. Checks the last `lookback` days."""
+    recent = candles[-lookback:]
+    for c in recent:
+        h, l = c[2], c[3]
+        if h > 0 and abs(h - l) / h < 0.0005:
+            return True
+    return False

@@ -34,6 +34,7 @@ class TradePlan:
     status: str  # "WATCH" or "ENTER NOW" or "NO TRIGGER"
     token: str = ""
     entered_at: str = ""  # "HH:MM" IST, set once status becomes "ENTER NOW"
+    circuit_history: bool = False  # hit a circuit limit in the last 10 days
 
 
 def build_plan(cand: Candidate, num_picks: int, status="WATCH") -> TradePlan:
@@ -58,6 +59,7 @@ def build_plan(cand: Candidate, num_picks: int, status="WATCH") -> TradePlan:
         square_off_time=config.SQUARE_OFF_TIME,
         status=status,
         token=cand.token,
+        circuit_history=cand.circuit_history,
     )
 
 

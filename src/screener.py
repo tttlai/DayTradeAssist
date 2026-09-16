@@ -13,6 +13,18 @@ Each candidate gets a numeric score so we can rank and keep only the
 strongest MAX_PICKS setups. This is a starting heuristic, not a proven
 edge — see README for how to swap in your own rules.
 
+Two more factors feed the score/filter beyond the base breakout/
+breakdown setup:
+  - ATR% (ATR as a fraction of price) -- candidates too "sleepy" to move
+    meaningfully intraday are filtered out (MIN_ATR_PCT), and among the
+    rest, higher ATR% nudges the score up since more room to move is
+    generally better for a day trade.
+  - Circuit-lock history -- a stock that's hit its exchange circuit limit
+    (High == Low for a whole session) in the last 10 days is flagged as
+    a risk note in the report, not scored up or down. This is a caution
+    signal (erratic moves, potential exit-liquidity risk), not something
+    to chase.
+
 Daily candles come from src/nse_data.py (free, no login) rather than
 Angel One -- this phase doesn't need live data, so there's no reason to
 spend an Angel login (and its tighter rate limits) on it.
@@ -34,6 +46,7 @@ class Candidate:
     rsi: float
     avg_volume_20: float
     score: float
+    circuit_history: bool = False
 
 
 def load_universe():
@@ -43,6 +56,8 @@ def load_universe():
 
 NEAR_LEVEL_PCT = 0.015  # within 1.5% of the 20-day high/low
 MIN_AVG_VOLUME = 200_000  # skip illiquid names — hard to fill/exit at size
+MIN_ATR_PCT = 0.008  # skip stocks too sleepy to move meaningfully intraday
+ATR_SCORE_WEIGHT = 10  # scales ATR% (~0.01-0.03 typically) into score's ~0-2 range
 
 
 def evaluate(symbol: str, candles) -> Candidate | None:
@@ -65,11 +80,17 @@ def evaluate(symbol: str, candles) -> Candidate | None:
     if atr_val is None or rsi_val is None or swing_high is None or swing_low is None:
         return None
 
+    atr_pct = atr_val / last_close if last_close > 0 else 0.0
+    if atr_pct < MIN_ATR_PCT:
+        return None
+
+    circuit_history = indicators.had_circuit_lock(candles)
+
     near_high = swing_high > 0 and (swing_high - last_close) / swing_high <= NEAR_LEVEL_PCT
     near_low = swing_low > 0 and (last_close - swing_low) / swing_low <= NEAR_LEVEL_PCT
 
     if near_high and volume_rising and rsi_val >= 50:
-        score = (recent_vol_5 / avg_vol_20) + (rsi_val / 100)
+        score = (recent_vol_5 / avg_vol_20) + (rsi_val / 100) + atr_pct * ATR_SCORE_WEIGHT
         return Candidate(
             symbol=symbol,
             token="",
@@ -80,10 +101,11 @@ def evaluate(symbol: str, candles) -> Candidate | None:
             rsi=rsi_val,
             avg_volume_20=avg_vol_20,
             score=score,
+            circuit_history=circuit_history,
         )
 
     if near_low and volume_rising and rsi_val <= 50:
-        score = (recent_vol_5 / avg_vol_20) + ((100 - rsi_val) / 100)
+        score = (recent_vol_5 / avg_vol_20) + ((100 - rsi_val) / 100) + atr_pct * ATR_SCORE_WEIGHT
         return Candidate(
             symbol=symbol,
             token="",
@@ -94,6 +116,7 @@ def evaluate(symbol: str, candles) -> Candidate | None:
             rsi=rsi_val,
             avg_volume_20=avg_vol_20,
             score=score,
+            circuit_history=circuit_history,
         )
 
     return None
