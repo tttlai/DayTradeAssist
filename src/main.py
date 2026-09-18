@@ -20,11 +20,21 @@ no Volume needed:
      Uses NSE's free bhavcopy (src/nse_data.py) for daily OHLCV, NOT an
      Angel One login -- this phase doesn't need live data, so there's no
      reason to spend a login against Angel's tighter rate limits on it.
-  2. CONFIRM    (~09:35 IST) — intraday trigger/volume check -> Telegram.
-     Needs live prices, so this one does use Angel One (login required).
+  2. CONFIRM    (~hourly, 09:20 through 14:00 IST, see CONFIRM_WINDOWS) —
+     intraday trigger/volume re-check -> Telegram. A stock that hasn't
+     triggered yet gets re-checked at each window rather than only once,
+     so a breakout that happens at, say, 11:20 instead of 9:20 isn't
+     missed. Once a stock triggers "ENTER NOW" it's not re-checked again
+     that day. The FIRST check always sends a full status message (same
+     as before); LATER checks stay silent unless something NEW triggered,
+     to avoid repeating "still nothing" every hour. The last window
+     (14:00) leaves over an hour before square-off so a fresh entry still
+     has room to reach target -- checks don't run any later than that.
+     Needs live prices, so this uses Angel One (login required each time).
   3. SUMMARY    (~15:40 IST) — replays real intraday candles for whatever
-     was confirmed in step 2 to report the hypothetical day's P&L. Also
-     uses Angel One, for the same live-data reason as step 2.
+     was confirmed across all of today's confirmation checks to report
+     the hypothetical day's P&L. Also uses Angel One, for the same
+     live-data reason as step 2.
 
 Every loop iteration also checks for a pending /health command sent to
 the bot on Telegram (see handle_commands()) -- since the loop runs
@@ -54,8 +64,20 @@ STATE_FILE = config.ROOT_DIR / "data" / "today_state.json"
 TELEGRAM_STATE_FILE = config.ROOT_DIR / "data" / "telegram_state.json"
 
 WATCHLIST_WINDOW = (dtime(8, 40), dtime(9, 5))
-CONFIRM_WINDOW = (dtime(9, 20), dtime(9, 45))
 SUMMARY_WINDOW = (dtime(15, 35), dtime(16, 0))
+
+# Roughly hourly re-checks. Stops at 14:00-14:15 rather than continuing to
+# market close -- a trade confirmed any later has too little runway before
+# the mandatory 15:15 square-off to realistically reach a 2R target, and
+# each check costs an Angel One login, so more/later checks isn't free.
+CONFIRM_WINDOWS = [
+    ("0920", dtime(9, 20), dtime(9, 35)),
+    ("1020", dtime(10, 20), dtime(10, 35)),
+    ("1120", dtime(11, 20), dtime(11, 35)),
+    ("1220", dtime(12, 20), dtime(12, 35)),
+    ("1320", dtime(13, 20), dtime(13, 35)),
+    ("1400", dtime(14, 0), dtime(14, 15)),
+]
 
 LOOP_INTERVAL_SECONDS = 30
 
@@ -70,7 +92,7 @@ def _default_state() -> dict:
         "candidates": [],
         "confirmed_plans": [],
         "sent_watchlist": False,
-        "sent_confirm": False,
+        "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "sent_summary": False,
     }
 
@@ -149,26 +171,40 @@ def run_watchlist():
     save_full_state(state)
 
 
-def run_confirm():
+def run_confirm(window_key: str):
+    is_first_check = window_key == CONFIRM_WINDOWS[0][0]
     state = load_full_state()
     candidates = [Candidate(**c) for c in state.get("candidates", [])]
+
     if not candidates:
-        if state.get("sent_watchlist"):
-            # The watchlist ran fine and genuinely found nothing worth
-            # watching today -- a normal outcome, not a problem.
-            notify.send_message(
-                "*Confirmation Check*\n\nToday's watchlist was empty (no "
-                "qualifying setups) -- nothing to confirm."
-            )
-        else:
-            # The watchlist never ran at all -- worth investigating
-            # (deploy/state-persistence/scheduling issue).
-            notify.send_message(
-                "*Confirmation Check*\n\n⚠️ No watchlist found for today, and "
-                "it doesn't look like the pre-market run executed -- check "
-                "Railway logs/deployment status."
-            )
-        state["sent_confirm"] = True
+        if is_first_check:
+            if state.get("sent_watchlist"):
+                # The watchlist ran fine and genuinely found nothing worth
+                # watching today -- a normal outcome, not a problem.
+                notify.send_message(
+                    "*Confirmation Check*\n\nToday's watchlist was empty (no "
+                    "qualifying setups) -- nothing to confirm."
+                )
+            else:
+                # The watchlist never ran at all -- worth investigating
+                # (deploy/state-persistence/scheduling issue).
+                notify.send_message(
+                    "*Confirmation Check*\n\n⚠️ No watchlist found for today, and "
+                    "it doesn't look like the pre-market run executed -- check "
+                    "Railway logs/deployment status."
+                )
+        # Later windows stay silent when there was never a watchlist --
+        # the first check already said so, no need to repeat it hourly.
+        state["confirm_checks_done"] = state.get("confirm_checks_done", []) + [window_key]
+        save_full_state(state)
+        return
+
+    already_confirmed_symbols = {p["symbol"] for p in state.get("confirmed_plans", [])}
+    pending = [c for c in candidates if c.symbol not in already_confirmed_symbols]
+
+    if not pending:
+        print(f"[confirm:{window_key}] everything already confirmed earlier today, nothing to re-check")
+        state["confirm_checks_done"] = state.get("confirm_checks_done", []) + [window_key]
         save_full_state(state)
         return
 
@@ -176,17 +212,28 @@ def run_confirm():
     api.login()
     try:
         plans = []
-        for c in candidates:
+        new_triggers = []
+        for c in pending:
             plan = strategy.build_plan(c, len(candidates))
             plan = strategy.check_confirmation(api, c, plan)
             if plan.status == "ENTER NOW":
                 plan.entered_at = timeutil.now_ist().strftime("%H:%M")
+                new_triggers.append(plan)
             plans.append(plan)
-        notify.send_message(report.format_confirmation(plans))
-        state["confirmed_plans"] = [
-            dataclasses.asdict(p) for p in plans if p.status == "ENTER NOW"
+
+        if is_first_check:
+            notify.send_message(report.format_confirmation(plans))
+        elif new_triggers:
+            notify.send_message(
+                report.format_new_triggers(new_triggers, timeutil.now_ist().strftime("%H:%M"))
+            )
+        else:
+            print(f"[confirm:{window_key}] nothing new triggered, staying quiet")
+
+        state["confirmed_plans"] = state.get("confirmed_plans", []) + [
+            dataclasses.asdict(p) for p in new_triggers
         ]
-        state["sent_confirm"] = True
+        state["confirm_checks_done"] = state.get("confirm_checks_done", []) + [window_key]
         save_full_state(state)
     finally:
         api.logout()
@@ -233,18 +280,22 @@ def run_auto():
     if WATCHLIST_WINDOW[0] <= t <= WATCHLIST_WINDOW[1] and not state.get("sent_watchlist"):
         print(f"[auto] {t} IST in watchlist window, not yet sent -> running watchlist")
         run_watchlist()
-    elif CONFIRM_WINDOW[0] <= t <= CONFIRM_WINDOW[1] and not state.get("sent_confirm"):
-        print(f"[auto] {t} IST in confirm window, not yet sent -> running confirm")
-        run_confirm()
-    elif (
-        SUMMARY_WINDOW[0] <= t <= SUMMARY_WINDOW[1]
-        and state.get("sent_confirm")
-        and not state.get("sent_summary")
-    ):
+        return
+
+    checks_done = state.get("confirm_checks_done", [])
+    for key, start, end in CONFIRM_WINDOWS:
+        if start <= t <= end and key not in checks_done:
+            print(f"[auto] {t} IST in confirm window {key}, not yet run -> running confirm")
+            run_confirm(key)
+            return
+
+    all_confirms_done = all(key in checks_done for key, _, _ in CONFIRM_WINDOWS)
+    if SUMMARY_WINDOW[0] <= t <= SUMMARY_WINDOW[1] and all_confirms_done and not state.get("sent_summary"):
         print(f"[auto] {t} IST in summary window, not yet sent -> running summary")
         run_summary()
-    else:
-        print(f"[auto] {t} IST - nothing to do (outside windows or already sent today)")
+        return
+
+    print(f"[auto] {t} IST - nothing to do (outside windows or already sent today)")
 
 
 def run_serve_loop():
@@ -268,12 +319,18 @@ def main():
         choices=["watchlist", "confirm", "summary", "health", "auto", "serve"],
         default="auto",
     )
+    parser.add_argument(
+        "--window",
+        choices=[key for key, _, _ in CONFIRM_WINDOWS],
+        default=CONFIRM_WINDOWS[0][0],
+        help="Which confirm window to force with --mode confirm (default: the first/09:20 one)",
+    )
     args = parser.parse_args()
 
     if args.mode == "watchlist":
         run_watchlist()
     elif args.mode == "confirm":
-        run_confirm()
+        run_confirm(args.window)
     elif args.mode == "summary":
         run_summary()
     elif args.mode == "health":

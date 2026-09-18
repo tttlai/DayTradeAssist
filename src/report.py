@@ -84,6 +84,24 @@ def format_confirmation(plans) -> str:
     return "\n".join(lines)
 
 
+def format_new_triggers(plans, check_time: str) -> str:
+    """A later-in-the-day re-check found something NEW that triggered.
+    Deliberately shorter than format_confirmation() -- this is an update,
+    not a full status report, since stocks that already triggered earlier
+    or are still pending aren't repeated here."""
+    lines = [f"*New Trigger — {check_time} IST*", ""]
+    for p in plans:
+        arrow = "🟢 LONG" if p.direction == "LONG" else "🔴 SHORT"
+        lines.append(f"*{p.symbol}* — {arrow} — ✅ ENTER NOW")
+        lines.append(f"  Entry ~₹{p.entry_trigger} | SL ₹{p.stop_loss} | Target ₹{p.target} | Qty {p.quantity}")
+        lines.append(f"  Exit by {p.square_off_time} regardless of P&L")
+        if p.circuit_history:
+            lines.append("  ⚡ _hit a circuit limit in the last 10 sessions — elevated risk_")
+        lines.append("")
+    lines.append(DISCLAIMER)
+    return "\n".join(lines)
+
+
 def format_daily_summary(results) -> str:
     """results: list of (TradePlan, tradesim.SimResult, pnl) for trades that
     were actually confirmed ('ENTER NOW') today."""

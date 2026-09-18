@@ -56,16 +56,25 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    expiry days. Sends you the watchlist with trigger price, stop-loss
    (1 ATR), target (2 ATR), and share quantity sized to your budget/risk
    settings.
-2. **Confirmation (~09:35 IST)**, after the opening range has formed —
-   re-checks each watchlist stock's live price and today's volume pace. A
-   stock is promoted to "ENTER NOW" only if price has actually crossed its
-   trigger *and* today's volume is running hot vs its normal pace. Everything
-   else is marked "no trigger — skip" (normal — most setups just don't
-   follow through, this is expected). If the live price fetch itself fails
-   for a stock, that's flagged separately with a ⚠️ warning at the top of
-   the message, distinct from a normal no-trigger, since it points to an
-   Angel One API/token problem worth investigating rather than the market
-   just not cooperating.
+2. **Confirmation — roughly hourly, 09:20 through 14:00 IST** (see
+   `CONFIRM_WINDOWS` in `src/main.py`) — re-checks each still-pending
+   watchlist stock's live price and today's volume pace. A stock is
+   promoted to "ENTER NOW" only if price has actually crossed its trigger
+   *and* today's volume is running hot vs its normal pace; once a stock
+   triggers it's not re-checked again that day. Checking isn't a single
+   9:35 snapshot — a breakout that happens at 11:20 instead of 9:20 still
+   gets caught. The **first** check (09:20) always sends a full status
+   message (same as before); **later** checks stay silent unless something
+   *new* triggered, so you're not getting a repeat "still nothing" message
+   every hour — a new trigger gets its own focused alert instead. Checks
+   stop at 14:00-14:15 rather than continuing to market close: an entry
+   confirmed any later has too little runway before the mandatory 15:15
+   square-off to realistically reach a 2R target, and each check costs an
+   Angel One login, so more/later checks isn't free. If the live price
+   fetch itself fails for a stock, that's flagged separately with a ⚠️
+   warning at the top of the message, distinct from a normal no-trigger,
+   since it points to an Angel One API/token problem worth investigating
+   rather than the market just not cooperating.
 3. **End-of-day summary (~15:40 IST)** — for whatever got confirmed in step
    2, replays the real 15-minute intraday candles from your alerted entry
    time through square-off to see which was actually touched first, the
@@ -132,7 +141,8 @@ Two things worth knowing about `src/nse_data.py`:
 pip install -r requirements.txt
 cp .env.example .env   # fill in your credentials
 python -m src.main --mode watchlist   # force the pre-market report now
-python -m src.main --mode confirm     # force the confirmation check now
+python -m src.main --mode confirm     # force the FIRST (09:20) confirmation check now
+python -m src.main --mode confirm --window 1120   # force a specific later check instead
 python -m src.main --mode summary     # force the end-of-day P&L summary now
 python -m src.main --mode health      # run the health check immediately
 ```
