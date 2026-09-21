@@ -74,7 +74,15 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    fetch itself fails for a stock, that's flagged separately with a ⚠️
    warning at the top of the message, distinct from a normal no-trigger,
    since it points to an Angel One API/token problem worth investigating
-   rather than the market just not cooperating.
+   rather than the market just not cooperating. One failure isolated to a
+   single stock during a single window can't derail anything else: it's
+   caught, logged, and that stock is just treated as a data failure for
+   that check rather than aborting the whole window. And if a window ever
+   fails so completely that it never gets marked done at all (say, Angel
+   One's login itself was down for that entire 15-minute window), the
+   next check after that window's end time auto-marks it skipped rather
+   than blocking every later check and the summary for the rest of the
+   day waiting for something that will never come.
 3. **End-of-day summary (~15:40 IST)** — for whatever got confirmed in step
    2, replays the real 15-minute intraday candles from your alerted entry
    time through square-off to see which was actually touched first, the

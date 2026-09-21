@@ -215,7 +215,16 @@ def run_confirm(window_key: str):
         new_triggers = []
         for c in pending:
             plan = strategy.build_plan(c, len(candidates))
-            plan = strategy.check_confirmation(api, c, plan)
+            try:
+                plan = strategy.check_confirmation(api, c, plan)
+            except Exception as e:
+                # One stock's API hiccup shouldn't abort the whole window --
+                # if it did, confirm_checks_done below would never get
+                # updated, which would permanently block every later window
+                # (and the summary) for the rest of the day. Treat it like
+                # any other live-data failure instead.
+                print(f"[confirm:{window_key}] {c.symbol}: check_confirmation raised {e.__class__.__name__}: {e}")
+                plan.status = "NO DATA"
             if plan.status == "ENTER NOW":
                 plan.entered_at = timeutil.now_ist().strftime("%H:%M")
                 new_triggers.append(plan)
@@ -284,10 +293,24 @@ def run_auto():
 
     checks_done = state.get("confirm_checks_done", [])
     for key, start, end in CONFIRM_WINDOWS:
-        if start <= t <= end and key not in checks_done:
+        if key in checks_done:
+            continue
+        if t < start:
+            break  # windows are chronological -- haven't reached this one yet
+        if t <= end:
             print(f"[auto] {t} IST in confirm window {key}, not yet run -> running confirm")
             run_confirm(key)
             return
+        # t > end: this window's time passed without ever completing (e.g.
+        # every attempt inside it raised before reaching the normal
+        # confirm_checks_done update -- api.login() itself failing, say).
+        # Mark it skipped rather than leaving it missing forever, which
+        # would otherwise permanently block every later window and the
+        # summary for the rest of the day.
+        print(f"[auto] {t} IST - confirm window {key} expired without completing, marking skipped")
+        checks_done = checks_done + [key]
+        state["confirm_checks_done"] = checks_done
+        save_full_state(state)
 
     all_confirms_done = all(key in checks_done for key, _, _ in CONFIRM_WINDOWS)
     if SUMMARY_WINDOW[0] <= t <= SUMMARY_WINDOW[1] and all_confirms_done and not state.get("sent_summary"):
