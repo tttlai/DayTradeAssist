@@ -50,12 +50,26 @@ class AngelAPI:
                 )
                 return self._scrip_master
 
-        resp = requests.get(config.SCRIP_MASTER_URL, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        config.SCRIP_MASTER_CACHE.write_text(json.dumps(data))
-        self._scrip_master = data
-        return data
+        try:
+            resp = requests.get(config.SCRIP_MASTER_URL, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            config.SCRIP_MASTER_CACHE.write_text(json.dumps(data))
+            self._scrip_master = data
+            return data
+        except requests.RequestException as e:
+            # Instrument tokens rarely change day to day -- a stale cache
+            # is far more useful than crashing the whole watchlist run
+            # over a fetch that failed. Fall back to it if one exists at
+            # all, however old; only give up empty if there's truly
+            # nothing on disk yet.
+            print(f"[angel_api] scrip master fetch failed ({e.__class__.__name__}): {e}")
+            if config.SCRIP_MASTER_CACHE.exists():
+                print("[angel_api] falling back to stale cached scrip master")
+                self._scrip_master = json.loads(config.SCRIP_MASTER_CACHE.read_text())
+                return self._scrip_master
+            self._scrip_master = []
+            return self._scrip_master
 
     def get_token(self, symbol: str) -> str | None:
         """Look up the NSE equity instrument token for a trading symbol."""
@@ -76,7 +90,10 @@ class AngelAPI:
         return None
 
     def get_daily_candles(self, token: str, days: int = 40):
-        """Returns list of [timestamp, open, high, low, close, volume]."""
+        """Returns list of [timestamp, open, high, low, close, volume].
+        Never raises -- an empty list on any failure, same contract as a
+        "status": false response, so callers don't need to know which
+        kind of failure occurred."""
         to_date = timeutil.now_ist()
         from_date = to_date - timedelta(days=days * 2)  # buffer for weekends/holidays
         params = {
@@ -86,13 +103,19 @@ class AngelAPI:
             "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
             "todate": to_date.strftime("%Y-%m-%d %H:%M"),
         }
-        result = self._client.getCandleData(params)
+        try:
+            result = self._client.getCandleData(params)
+        except Exception as e:
+            print(f"[angel_api] get_daily_candles({token}) raised {e.__class__.__name__}: {e}")
+            return []
         if not result.get("status"):
             return []
         return result.get("data", [])[-days:]
 
     def get_intraday_candles(self, token: str, interval="FIFTEEN_MINUTE"):
-        """Today's (IST) intraday candles, used for confirmation + summary."""
+        """Today's (IST) intraday candles, used for confirmation + summary.
+        Never raises -- same empty-list-on-any-failure contract as
+        get_daily_candles()."""
         today = timeutil.now_ist()
         from_date = today.replace(hour=9, minute=15, second=0, microsecond=0)
         params = {
@@ -102,7 +125,11 @@ class AngelAPI:
             "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
             "todate": today.strftime("%Y-%m-%d %H:%M"),
         }
-        result = self._client.getCandleData(params)
+        try:
+            result = self._client.getCandleData(params)
+        except Exception as e:
+            print(f"[angel_api] get_intraday_candles({token}) raised {e.__class__.__name__}: {e}")
+            return []
         if not result.get("status"):
             return []
         return result.get("data", [])

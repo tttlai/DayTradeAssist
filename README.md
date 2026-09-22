@@ -94,6 +94,37 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    the summary window closes without ever completing, you get a fallback
    "couldn't generate today's summary" notice instead of silence.
 
+### Reliability
+
+Two real production incidents (a bad confirm window silently blocking the
+summary forever, then the same bug pattern in the summary phase itself)
+led to a full audit of every place an Angel One/Telegram/NSE network call
+sits upstream of the state update that marks a phase "done." The result:
+
+- **Every per-stock/per-trade API call is isolated.** One bad stock during
+  a confirmation check, or one confirmed trade whose outcome can't be
+  computed during the summary, no longer aborts the whole phase — it's
+  logged and surfaced as a data-failure note, and everything else that
+  *did* work still gets reported normally.
+- **`notify.send_message()` never raises.** Every phase does real
+  bookkeeping (marking itself done) immediately after sending its
+  message; a hardened, always-catches Telegram send protects all of them
+  at once rather than needing every caller to guard against it
+  individually.
+- **`AngelAPI`'s data-fetching methods never raise** (`get_daily_candles`,
+  `get_intraday_candles`) — same empty-result-on-any-failure contract as
+  a normal "no data" response, so callers don't need to distinguish
+  network failures from business-logic ones.
+- **The scrip master falls back to a stale cache** rather than failing
+  outright if NSE/Angel's servers are briefly unreachable — instrument
+  tokens rarely change day to day, so slightly-stale data beats none.
+- **Every phase (watchlist, each confirm window, summary) has a fallback
+  path**: if it fails so completely that it never completes within its
+  own time window, the next check sends an explicit "couldn't generate
+  X due to a technical issue" notice and marks that phase resolved,
+  rather than leaving it stuck (silently blocking everything downstream
+  that depends on it) for the rest of the day.
+
 Every message repeats your mandatory square-off time (`SQUARE_OFF_TIME`,
 default 15:15) since this tool only ever proposes intraday (MIS) trades.
 

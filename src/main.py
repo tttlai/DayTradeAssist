@@ -92,6 +92,7 @@ def _default_state() -> dict:
         "candidates": [],
         "confirmed_plans": [],
         "sent_watchlist": False,
+        "watchlist_failure_notified": False,
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "sent_summary": False,
     }
@@ -299,6 +300,24 @@ def run_auto():
         print(f"[auto] {t} IST in watchlist window, not yet sent -> running watchlist")
         run_watchlist()
         return
+
+    if (
+        t > WATCHLIST_WINDOW[1]
+        and not state.get("sent_watchlist")
+        and not state.get("watchlist_failure_notified")
+    ):
+        # The watchlist window closed without ever completing (every retry
+        # inside it raised). Leaves sent_watchlist False -- run_confirm()'s
+        # existing "doesn't look like the pre-market run executed" message
+        # already handles that accurately -- this just gets you an earlier
+        # heads-up at 09:05 instead of waiting for confirm's first check.
+        print(f"[auto] {t} IST - watchlist window expired without completing, sending fallback notice")
+        notify.send_message(
+            "*Day Trading Watchlist*\n\n⚠️ Couldn't generate today's watchlist due to a "
+            "technical issue -- check Railway logs around 08:40-09:05 IST."
+        )
+        state["watchlist_failure_notified"] = True
+        save_full_state(state)
 
     checks_done = state.get("confirm_checks_done", [])
     for key, start, end in CONFIRM_WINDOWS:
