@@ -88,7 +88,11 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    time through square-off to see which was actually touched first, the
    stop-loss or the target (or neither, in which case it uses the
    square-off-time price). Reports the hypothetical P&L per trade and the
-   day's total, had you followed every signal exactly.
+   day's total, had you followed every signal exactly. Same resilience as
+   the confirmation phase: one confirmed trade's API failure is surfaced
+   with a ⚠️ note rather than silently costing the whole summary, and if
+   the summary window closes without ever completing, you get a fallback
+   "couldn't generate today's summary" notice instead of silence.
 
 Every message repeats your mandatory square-off time (`SQUARE_OFF_TIME`,
 default 15:15) since this tool only ever proposes intraday (MIS) trades.

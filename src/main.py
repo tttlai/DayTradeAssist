@@ -262,17 +262,26 @@ def run_summary():
     api.login()
     try:
         results = []
+        failed_symbols = []
         for plan in plans:
-            intraday = api.get_intraday_candles(plan.token, interval="FIFTEEN_MINUTE")
-            relevant = [
-                c
-                for c in intraday
-                if plan.entered_at <= timeutil.candle_time_str(c[0]) <= config.SQUARE_OFF_TIME
-            ]
-            sim = tradesim.walk_candles(relevant, plan.direction, plan.stop_loss, plan.target)
-            trade_pnl = tradesim.pnl(plan.direction, plan.entry_trigger, sim.exit_price, plan.quantity)
-            results.append((plan, sim, trade_pnl))
-        notify.send_message(report.format_daily_summary(results))
+            try:
+                intraday = api.get_intraday_candles(plan.token, interval="FIFTEEN_MINUTE")
+                relevant = [
+                    c
+                    for c in intraday
+                    if plan.entered_at <= timeutil.candle_time_str(c[0]) <= config.SQUARE_OFF_TIME
+                ]
+                sim = tradesim.walk_candles(relevant, plan.direction, plan.stop_loss, plan.target)
+                trade_pnl = tradesim.pnl(plan.direction, plan.entry_trigger, sim.exit_price, plan.quantity)
+                results.append((plan, sim, trade_pnl))
+            except Exception as e:
+                # One plan's API hiccup shouldn't cost the whole summary --
+                # if it did, sent_summary below would never get set, same
+                # class of bug as the confirm-window issue this mirrors.
+                print(f"[summary] {plan.symbol}: failed to compute outcome: {e.__class__.__name__}: {e}")
+                failed_symbols.append(plan.symbol)
+
+        notify.send_message(report.format_daily_summary(results, failed_symbols))
         state["sent_summary"] = True
         save_full_state(state)
     finally:
@@ -316,6 +325,21 @@ def run_auto():
     if SUMMARY_WINDOW[0] <= t <= SUMMARY_WINDOW[1] and all_confirms_done and not state.get("sent_summary"):
         print(f"[auto] {t} IST in summary window, not yet sent -> running summary")
         run_summary()
+        return
+
+    if t > SUMMARY_WINDOW[1] and all_confirms_done and not state.get("sent_summary"):
+        # The summary window closed without ever completing (every retry
+        # inside it raised before reaching the normal sent_summary update).
+        # Unlike confirm windows there's only one summary window, so there's
+        # no later window to fall through to -- send a fallback notice
+        # instead of leaving it silently unresolved for the rest of the day.
+        print(f"[auto] {t} IST - summary window expired without completing, sending fallback notice")
+        notify.send_message(
+            "*End of Day Summary*\n\n⚠️ Couldn't generate today's summary due to a "
+            "technical issue -- check Railway logs around 15:35-16:00 IST."
+        )
+        state["sent_summary"] = True
+        save_full_state(state)
         return
 
     print(f"[auto] {t} IST - nothing to do (outside windows or already sent today)")

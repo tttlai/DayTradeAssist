@@ -102,15 +102,29 @@ def format_new_triggers(plans, check_time: str) -> str:
     return "\n".join(lines)
 
 
-def format_daily_summary(results) -> str:
+def format_daily_summary(results, failed_symbols=None) -> str:
     """results: list of (TradePlan, tradesim.SimResult, pnl) for trades that
-    were actually confirmed ('ENTER NOW') today."""
+    were actually confirmed ('ENTER NOW') today. failed_symbols: confirmed
+    trades whose outcome couldn't be computed (an Angel One API failure
+    fetching that specific stock's intraday candles), surfaced separately
+    from a genuinely empty day so a data problem isn't mistaken for
+    "nothing happened"."""
+    failed_symbols = failed_symbols or []
     today = timeutil.now_ist().strftime("%d %b %Y")
     lines = [f"*End of Day Summary — {today}*", ""]
 
-    if not results:
+    if not results and not failed_symbols:
         lines.append("No trades were confirmed today, so there's nothing to summarize.")
         lines.append("")
+        lines.append(DISCLAIMER)
+        return "\n".join(lines)
+
+    if failed_symbols:
+        names = ", ".join(failed_symbols)
+        lines.append(f"⚠️ *Could not compute outcome for: {names}* — check Angel One connectivity/Railway logs.")
+        lines.append("")
+
+    if not results:
         lines.append(DISCLAIMER)
         return "\n".join(lines)
 
