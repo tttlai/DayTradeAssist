@@ -19,7 +19,14 @@ module. src/angel_api.py (needing a live login) still handles the
 confirmation/summary phases, which genuinely need live intraday data.
 
 If NSE changes their bhavcopy URL format again (they have before), this
-is the one place to update it.
+is the one place to update it. Confirmed in production (2026-09-23): NSE
+can also return a hard 403 for every date attempted, seemingly IP-based
+(the identical URL worked fine from a different network at the same
+moment) -- likely NSE blocking Railway's shared egress IP range, nothing
+wrong with the request itself. fetch_daily_history() raises
+NSEUnavailable in that case rather than silently returning nothing;
+main.py::run_watchlist() catches it and falls back to Angel One's own
+daily-candle API for that day.
 """
 import csv
 import io
@@ -30,6 +37,13 @@ from datetime import date, timedelta
 import requests
 
 from . import timeutil
+
+
+class NSEUnavailable(Exception):
+    """NSE responded, but with an error status other than 404 -- most
+    likely blocked (IP-based) or their site/format changed, not a
+    date-specific gap. Not worth retrying other dates for; the caller
+    should fall back to a different data source instead."""
 
 BHAVCOPY_URL = (
     "https://nsearchives.nseindia.com/content/cm/"
@@ -48,7 +62,15 @@ REQUEST_SLEEP = 0.3  # be polite to NSE's servers across a multi-day fetch
 def fetch_bhavcopy_for_date(d: date) -> dict | None:
     """Returns {symbol: [date_str, open, high, low, close, volume]} for
     every regular-equity (SctySrs == 'EQ') NSE stock on that date, or
-    None if there's no file for that date (weekend/holiday/too-recent)."""
+    None if there's no file for that date (weekend/holiday/too-recent).
+
+    Raises NSEUnavailable for any non-404 error status (403, 500, etc) --
+    a real server response rejecting the request, not a network blip, so
+    retrying a different date is pointless; the caller should stop and
+    fall back. A network-level failure (timeout, connection error)
+    instead returns None like a 404, since those are more likely
+    transient and date-independent -- worth trying another date for.
+    """
     url = BHAVCOPY_URL.format(date_str=d.strftime("%Y%m%d"))
     try:
         resp = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
@@ -58,7 +80,9 @@ def fetch_bhavcopy_for_date(d: date) -> dict | None:
 
     if resp.status_code == 404:
         return None
-    resp.raise_for_status()
+    if not resp.ok:
+        print(f"[nse_data] NSE returned HTTP {resp.status_code} for {d} -- likely blocked or format changed")
+        raise NSEUnavailable(f"HTTP {resp.status_code} for {url}")
 
     rows = {}
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:

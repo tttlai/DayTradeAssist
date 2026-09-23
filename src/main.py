@@ -149,6 +149,22 @@ def handle_commands():
         _save_last_update_id(new_last_id)
 
 
+def _fetch_daily_history_via_angel(api: AngelAPI, symbols: list[str], days: int) -> dict:
+    """Fallback used only when NSE's bhavcopy is unavailable (e.g. IP-
+    blocked -- see nse_data.py). Costs one Angel One login and one API
+    call per symbol, unlike the normal free NSE path; only invoked when
+    NSE fails outright, not on every run."""
+    history = {}
+    for symbol in symbols:
+        token = api.get_token(symbol)
+        if not token:
+            continue
+        candles = api.get_daily_candles(token, days=days)
+        if candles:
+            history[symbol] = candles
+    return history
+
+
 def run_watchlist():
     print(
         f"[config] MAX_BUDGET=Rs{config.MAX_BUDGET:,.0f} "
@@ -160,9 +176,19 @@ def run_watchlist():
     # No Angel One login for this phase -- daily OHLCV comes from NSE's
     # free bhavcopy (nse_data.py); AngelAPI is only used here for its
     # scrip-master token lookup, which doesn't require a session either.
+    # Falls back to an Angel One login only if NSE fails outright.
     api = AngelAPI()
     symbols = screener.load_universe()
-    history = nse_data.fetch_daily_history(symbols, days=30)
+    try:
+        history = nse_data.fetch_daily_history(symbols, days=30)
+    except nse_data.NSEUnavailable as e:
+        print(f"[watchlist] NSE bhavcopy unavailable ({e}) -- falling back to Angel One for daily candles")
+        api.login()
+        try:
+            history = _fetch_daily_history_via_angel(api, symbols, days=30)
+        finally:
+            api.logout()
+
     candidates = build_watchlist(api.get_token, history)
 
     plans = [strategy.build_plan(c, len(candidates)) for c in candidates]

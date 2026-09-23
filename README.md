@@ -135,7 +135,7 @@ needs *live* data:
 
 | Phase | Needs live data? | Source | Login required? |
 |---|---|---|---|
-| Watchlist (daily screen) | No — works off yesterday's close | NSE bhavcopy (`src/nse_data.py`) | No |
+| Watchlist (daily screen) | No — works off yesterday's close | NSE bhavcopy, falls back to Angel One if NSE is unreachable (`src/nse_data.py`) | No, unless the NSE fallback kicks in |
 | Backtest | No — historical daily candles | NSE bhavcopy (`src/nse_data.py`) | No |
 | Confirmation | Yes — live price/volume | Angel One SmartAPI | Yes |
 | End-of-day summary | Yes — real intraday candles | Angel One SmartAPI | Yes |
@@ -147,7 +147,7 @@ limit worth worrying about for once-a-day use. This cuts your daily
 Angel One logins roughly in half (down to just the confirmation and
 summary runs) and means the backtest needs no Angel credentials at all.
 
-Two things worth knowing about `src/nse_data.py`:
+Three things worth knowing about `src/nse_data.py`:
 - **NSE's CDN silently hangs connections without a browser-like
   User-Agent header** (no clean error, just a timeout) — already handled,
   but if NSE ever changes their anti-bot behavior, that's the symptom.
@@ -155,6 +155,14 @@ Two things worth knowing about `src/nse_data.py`:
   before). If the watchlist starts reporting "No qualifying setups" every
   day for no clear reason, check `BHAVCOPY_URL` in `src/nse_data.py`
   against NSE's current archives page.
+- **NSE can also return a hard 403 for every date, seemingly IP-based**
+  (confirmed in production — the identical URL worked fine from a
+  different network at the same moment; most likely NSE blocking
+  Railway's shared egress IP range, nothing to do with the request
+  itself). `fetch_daily_history()` raises `NSEUnavailable` in that case
+  rather than quietly returning nothing, and `run_watchlist()` catches it
+  and falls back to Angel One's own daily-candle API for that day only —
+  costing one extra login on the days this happens, not every day.
 
 ## Setup
 
