@@ -132,7 +132,13 @@ def format_daily_summary(results, failed_symbols=None) -> str:
     for plan, sim, trade_pnl in results:
         total_pnl += trade_pnl
         emoji = "✅" if trade_pnl > 0 else ("❌" if trade_pnl < 0 else "➖")
-        lines.append(f"{emoji} *{plan.symbol}* ({plan.direction}) — {sim.outcome}")
+        # tradesim.py's outcome constants include raw underscores
+        # (TIME_EXIT, NO_TRIGGER) -- a single unescaped "_" inside
+        # Telegram's Markdown parse mode opens an italic span, and an odd
+        # count of them anywhere in the message breaks the whole send with
+        # "can't parse entities" (confirmed in production). Space instead.
+        outcome_display = sim.outcome.replace("_", " ")
+        lines.append(f"{emoji} *{plan.symbol}* ({plan.direction}) — {outcome_display}")
         lines.append(
             f"  Entry ₹{plan.entry_trigger} → Exit ₹{sim.exit_price} × {plan.quantity} = ₹{trade_pnl:,.0f}"
         )

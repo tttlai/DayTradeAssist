@@ -124,6 +124,22 @@ sits upstream of the state update that marks a phase "done." The result:
   X due to a technical issue" notice and marks that phase resolved,
   rather than leaving it stuck (silently blocking everything downstream
   that depends on it) for the rest of the day.
+- **The watchlist falls back to Angel One if NSE blocks the request
+  entirely** (confirmed in production — NSE returned a hard 403 for every
+  date attempted, seemingly IP-based, since the identical URL worked fine
+  from a different network at the same moment). Costs one extra Angel
+  login only on the days this happens, not every day.
+- **A malformed Telegram message retries as plain text instead of being
+  silently lost.** Also confirmed in production: `tradesim.py`'s
+  `TIME_EXIT`/`NO_TRIGGER` outcome strings have a raw underscore, which
+  Telegram's Markdown parser reads as opening italics — an odd count
+  anywhere in the message breaks the *entire* send with a 400, and
+  because that's a real HTTP response rather than a raised exception, the
+  phase still marked itself "done" even though the message never arrived.
+  Fixed at the source (outcomes are now rendered without underscores) and
+  as a general safety net (`notify.send_message()` retries any 400 once
+  without `parse_mode`, so a future formatting bug degrades to an
+  unformatted message instead of vanishing).
 
 Every message repeats your mandatory square-off time (`SQUARE_OFF_TIME`,
 default 15:15) since this tool only ever proposes intraday (MIS) trades.
