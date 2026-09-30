@@ -18,6 +18,11 @@ def _get_int(name: str, default: int) -> int:
     return int(val) if val else default
 
 
+def _get_bool(name: str, default: bool) -> bool:
+    val = os.getenv(name)
+    return val.strip().lower() in ("1", "true", "yes") if val else default
+
+
 # Angel One SmartAPI (read-only: quotes & historical candles only, never order placement)
 ANGEL_API_KEY = os.getenv("ANGEL_API_KEY", "")
 ANGEL_CLIENT_CODE = os.getenv("ANGEL_CLIENT_CODE", "")
@@ -34,6 +39,15 @@ MAX_BUDGET = _get_float("MAX_BUDGET", 50000.0)
 RISK_PER_TRADE_PCT = _get_float("RISK_PER_TRADE_PCT", 0.01)
 MAX_PICKS = _get_int("MAX_PICKS", 3)
 SQUARE_OFF_TIME = os.getenv("SQUARE_OFF_TIME", "15:15")
+
+# Requires price to be on the "right side" of the day's VWAP (above for a
+# LONG, below for a SHORT) before confirming a trigger -- a standard,
+# well-evidenced intraday order-flow filter. Can't be backtested against
+# our free NSE data (VWAP needs real intraday candles, which the daily
+# bhavcopy doesn't have), so this is validated by watching live results,
+# not a historical backtest. Set REQUIRE_VWAP_CONFIRMATION=false to
+# disable if it turns out not to help.
+REQUIRE_VWAP_CONFIRMATION = _get_bool("REQUIRE_VWAP_CONFIRMATION", True)
 
 UNIVERSE_CSV = ROOT_DIR / "data" / "universe.csv"
 SCRIP_MASTER_URL = (

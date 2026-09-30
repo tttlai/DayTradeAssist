@@ -66,6 +66,18 @@ def prior_swing_low(candles, lookback=20):
     return float(np.min(l)) if len(l) else None
 
 
+def vwap(candles) -> float | None:
+    """Volume-weighted average price across the given (intraday) candles,
+    using each candle's typical price (H+L+C)/3 weighted by its volume --
+    the standard VWAP formula. Meant for a single day's intraday candles
+    from market open through now; None if there's nothing to weight."""
+    v = volumes(candles)
+    if len(v) == 0 or v.sum() == 0:
+        return None
+    typical = (highs(candles) + lows(candles) + closes(candles)) / 3.0
+    return float(np.sum(typical * v) / np.sum(v))
+
+
 def had_circuit_lock(candles, lookback=10) -> bool:
     """A day where High == Low means the stock was pinned at its
     exchange circuit limit for the whole session -- no trading range at

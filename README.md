@@ -59,9 +59,16 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
 2. **Confirmation — roughly hourly, 09:20 through 14:00 IST** (see
    `CONFIRM_WINDOWS` in `src/main.py`) — re-checks each still-pending
    watchlist stock's live price and today's volume pace. A stock is
-   promoted to "ENTER NOW" only if price has actually crossed its trigger
-   *and* today's volume is running hot vs its normal pace; once a stock
-   triggers it's not re-checked again that day. Checking isn't a single
+   promoted to "ENTER NOW" only if price has actually crossed its trigger,
+   today's volume is running hot vs its normal pace, *and* (if
+   `REQUIRE_VWAP_CONFIRMATION`, on by default) price is on the expected
+   side of today's VWAP — above it for a LONG, below it for a SHORT. That
+   VWAP check can't be backtested against this project's free NSE data
+   (VWAP needs real intraday candles, which the daily bhavcopy doesn't
+   have), so it's judged by watching live results rather than a
+   historical backtest — set `REQUIRE_VWAP_CONFIRMATION=false` to turn it
+   off if it doesn't end up helping. Once a stock triggers it's not
+   re-checked again that day. Checking isn't a single
    9:35 snapshot — a breakout that happens at 11:20 instead of 9:20 still
    gets caught. The **first** check (09:20) always sends a full status
    message (same as before); **later** checks stay silent unless something
@@ -231,6 +238,21 @@ catch an obviously broken or negative-expectancy setup before you trade
 it live, not to prove an edge. The live end-of-day summary (above) is
 the accurate version, since it uses real 15-minute candles for trades
 you actually got alerted on.
+
+`--stop-multiple` / `--target-multiple` override the ATR multiples
+(defaults: `strategy.STOP_R_MULTIPLE` = 1.0, `strategy.TARGET_R_MULTIPLE`
+= 2.0) to compare configurations, e.g. `python -m src.backtest --days 60
+--stop-multiple 0.5 --target-multiple 1.0`. **What we found testing
+this**: 88-89% of trades hit neither the stop nor the target at the
+default multiples — they drift to square-off (`TIME_EXIT`) — consistent
+across both a 60-day and a 120-day window, so that's the strategy's
+normal behavior, not a red flag. Tightening the multiples to force more
+trades to resolve made total P&L and max drawdown *worse* in every
+variant tried, not better — a tighter stop mainly bought more
+stopped-out trades on ordinary noise, not more clean wins. Left the
+defaults as-is based on this; see the outcome breakdown the backtest
+prints (`Outcomes: STOPPED n%, TARGET n%, TIME_EXIT n%`) before changing
+these yourself.
 
 ### 4. Deploy to Railway
 

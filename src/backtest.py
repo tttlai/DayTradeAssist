@@ -41,8 +41,10 @@ def common_dates(history, threshold=0.9):
     return sorted(d for d, cnt in counts.items() if cnt >= n * threshold)
 
 
-def run_backtest(days=60, max_picks=None):
+def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=None):
     max_picks = max_picks or config.MAX_PICKS
+    stop_multiple = stop_multiple if stop_multiple is not None else strategy.STOP_R_MULTIPLE
+    target_multiple = target_multiple if target_multiple is not None else strategy.TARGET_R_MULTIPLE
     symbols = screener.load_universe()
 
     print(f"Fetching {days + LOOKBACK + 10} days of NSE bhavcopy history for {len(symbols)} symbols...")
@@ -59,7 +61,8 @@ def run_backtest(days=60, max_picks=None):
         symbol: {c[0]: c for c in candles} for symbol, candles in history.items()
     }
 
-    print(f"Replaying {len(eval_dates)} trading days...")
+    print(f"Replaying {len(eval_dates)} trading days "
+          f"(stop={stop_multiple}x ATR, target={target_multiple}x ATR)...")
     trades = []
     for date in eval_dates:
         day_candidates = []
@@ -77,7 +80,9 @@ def run_backtest(days=60, max_picks=None):
         picks = affordable[:max_picks]
 
         for cand in picks:
-            plan = strategy.build_plan(cand, len(picks))
+            plan = strategy.build_plan(
+                cand, len(picks), stop_multiple=stop_multiple, target_multiple=target_multiple
+            )
             if plan.quantity <= 0:
                 continue
 
@@ -119,9 +124,20 @@ def print_report(trades, num_days):
     losses = [t for t in trades if t["pnl"] < 0]
     total_pnl = sum(t["pnl"] for t in trades)
 
+    outcome_counts = defaultdict(int)
+    for t in trades:
+        outcome_counts[t["outcome"]] += 1
+
     print(f"Backtest window : {num_days} trading days")
     print(f"Trades triggered: {len(trades)}")
     print(f"Win rate        : {len(wins)}/{len(trades)} ({100*len(wins)/len(trades):.1f}%)")
+    print(
+        "Outcomes        : "
+        + ", ".join(
+            f"{outcome} {count} ({100*count/len(trades):.0f}%)"
+            for outcome, count in sorted(outcome_counts.items())
+        )
+    )
     print(f"Total P&L       : Rs {total_pnl:,.0f}")
     print(f"Avg P&L / trade : Rs {total_pnl/len(trades):,.0f}")
     if wins:
@@ -151,8 +167,16 @@ def print_report(trades, num_days):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=60, help="Number of trading days to backtest")
+    parser.add_argument(
+        "--stop-multiple", type=float, default=None,
+        help=f"Stop-loss distance as a multiple of ATR (default: strategy.STOP_R_MULTIPLE = {strategy.STOP_R_MULTIPLE})",
+    )
+    parser.add_argument(
+        "--target-multiple", type=float, default=None,
+        help=f"Target distance as a multiple of ATR (default: strategy.TARGET_R_MULTIPLE = {strategy.TARGET_R_MULTIPLE})",
+    )
     args = parser.parse_args()
-    run_backtest(days=args.days)
+    run_backtest(days=args.days, stop_multiple=args.stop_multiple, target_multiple=args.target_multiple)
 
 
 if __name__ == "__main__":

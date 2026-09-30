@@ -9,16 +9,18 @@ Two stages, matching the two scheduled runs described in the README:
     is "here's what to watch for at the open."
 
   CONFIRMATION (run intraday, ~09:35 IST, after the opening range forms)
-    Re-checks each watchlist name against live price + volume. Only
-    names that actually broke their trigger with above-average volume
-    are promoted to "enter now"; the rest are marked "no trigger — skip."
+    Re-checks each watchlist name against live price + volume, and (if
+    REQUIRE_VWAP_CONFIRMATION) whether price is on the expected side of
+    today's VWAP. Only names that pass all three are promoted to "enter
+    now"; the rest are marked "no trigger — skip."
 """
 from dataclasses import dataclass
 
 from . import config, indicators, risk
 from .screener import Candidate
 
-TARGET_R_MULTIPLE = 2.0  # target = 2x the risk (stop distance)
+STOP_R_MULTIPLE = 1.0  # stop-loss = 1x ATR from entry
+TARGET_R_MULTIPLE = 2.0  # target = 2x ATR from entry (2x the stop distance)
 MARKET_MINUTES = 375  # 9:15 to 15:30
 
 
@@ -37,15 +39,24 @@ class TradePlan:
     circuit_history: bool = False  # hit a circuit limit in the last 10 days
 
 
-def build_plan(cand: Candidate, num_picks: int, status="WATCH") -> TradePlan:
+def build_plan(
+    cand: Candidate,
+    num_picks: int,
+    status="WATCH",
+    stop_multiple: float = STOP_R_MULTIPLE,
+    target_multiple: float = TARGET_R_MULTIPLE,
+) -> TradePlan:
+    """stop_multiple/target_multiple default to the live constants above --
+    only src/backtest.py overrides them, to compare configurations without
+    touching what's actually running."""
     if cand.direction == "LONG":
         entry = round(cand.trigger_level * 1.001, 2)
-        stop_loss = round(entry - cand.atr, 2)
-        target = round(entry + TARGET_R_MULTIPLE * cand.atr, 2)
+        stop_loss = round(entry - stop_multiple * cand.atr, 2)
+        target = round(entry + target_multiple * cand.atr, 2)
     else:
         entry = round(cand.trigger_level * 0.999, 2)
-        stop_loss = round(entry + cand.atr, 2)
-        target = round(entry - TARGET_R_MULTIPLE * cand.atr, 2)
+        stop_loss = round(entry + stop_multiple * cand.atr, 2)
+        target = round(entry - target_multiple * cand.atr, 2)
 
     qty = risk.position_size(entry, stop_loss, num_picks)
 
@@ -67,7 +78,8 @@ VOLUME_CONFIRM_MULTIPLE = 1.2  # today's pace must beat this x the 20-day averag
 
 
 def check_confirmation(api, cand: Candidate, plan: TradePlan) -> TradePlan:
-    """Intraday re-check: did price actually cross the trigger with volume?"""
+    """Intraday re-check: did price actually cross the trigger with volume
+    (and, if enabled, on the right side of VWAP)?"""
     ltp = api.get_ltp(cand.symbol, cand.token)
     if ltp is None:
         print(f"[confirm] {cand.symbol}: get_ltp returned None -- Angel One API/token issue?")
@@ -89,7 +101,20 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan) -> TradePlan:
         ltp >= plan.entry_trigger if cand.direction == "LONG" else ltp <= plan.entry_trigger
     )
 
-    if price_broke_trigger and volume_confirms:
+    # Order-flow filter: only take a LONG above today's VWAP, a SHORT
+    # below it -- can't be backtested against our free NSE data (VWAP
+    # needs real intraday candles the daily bhavcopy doesn't have), so
+    # this is judged by watching live results, not a historical backtest.
+    # REQUIRE_VWAP_CONFIRMATION=false disables it if that doesn't pan out.
+    vwap_confirms = True
+    if config.REQUIRE_VWAP_CONFIRMATION:
+        today_vwap = indicators.vwap(intraday)
+        if today_vwap is None:
+            vwap_confirms = False
+        else:
+            vwap_confirms = ltp > today_vwap if cand.direction == "LONG" else ltp < today_vwap
+
+    if price_broke_trigger and volume_confirms and vwap_confirms:
         plan.status = "ENTER NOW"
         plan.entry_trigger = round(ltp, 2)
     else:
