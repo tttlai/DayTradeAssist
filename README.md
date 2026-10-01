@@ -115,6 +115,25 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    isolation. This is the one phase in the whole project with a real
    recurring cost (a per-day API charge); everything else is free.
 
+   If `GITHUB_TOKEN` is also set, the eval can go one step further: when
+   the day's evidence clearly supports it (rare by design — most days
+   shouldn't warrant a change), it opens a GitHub PR tweaking exactly one
+   of a pre-approved whitelist of numeric constants (`VOLUME_CONFIRM_MULTIPLE`,
+   `STOP_R_MULTIPLE`, `TARGET_R_MULTIPLE`), clamped to a safe range
+   regardless of what it asks for. You approve or reject it with a plain
+   **YES** or **NO** reply in Telegram — approving merges the PR (Railway
+   redeploys with the new value), rejecting closes it unmerged. This is
+   deliberately scoped to simple, bounded numbers: a bare "yes" is a
+   strong enough review for "this one number changes within a safe
+   range," but wouldn't be a safe way to approve an arbitrary code diff
+   you never actually saw — anything more involved than a whitelisted
+   constant just stays a prose suggestion for you to bring to the
+   developer directly, same as before this existed. A bare "yes"/"no"
+   only ever does anything when a suggestion is actually pending; sent
+   any other time, it's just treated as an unrecognized command, so
+   there's no risk of accidentally triggering it through casual chat
+   with the bot.
+
 ### Reliability
 
 Two real production incidents (a bad confirm window silently blocking the
@@ -236,7 +255,24 @@ Skip this entirely to leave the eval phase off — without
    day, with maybe a few thousand tokens of context, likely a fraction of
    a cent to a few cents depending on the model. `EVAL_MODEL` defaults to
    `claude-sonnet-5`; switch to a cheaper/faster model if you want to
-   trim that further.
+   trim that further. If your Anthropic account supports workspaces, a
+   dedicated one for just this key gives you clean, isolated cost
+   visibility for this feature specifically.
+
+#### Auto-tuning via GitHub PR (optional, needs the eval agent above)
+
+1. Create a **fine-grained** personal access token at
+   [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens) —
+   scope it to **only this one repository**, with **Contents** and
+   **Pull requests** permissions set to Read and write, nothing else. Set
+   it as `GITHUB_TOKEN`, and set `GITHUB_REPO` to `owner/repo` (e.g.
+   `tttlai/DayTradeAssist`).
+2. Without this set, the eval still runs and gives its prose analysis —
+   it just never proposes a parameter change or opens a PR.
+3. When it does propose one, you'll get a Telegram message naming the
+   exact constant, its suggested new value, and a PR link. Reply **YES**
+   to merge it (Railway redeploys with the new value) or **NO** to close
+   it without merging. Only one suggestion is ever pending at a time.
 
 ### 4. Local run (optional, to test before deploying)
 
@@ -391,6 +427,8 @@ src/
   health.py      /health check: Angel One reachability + login
   telegram_commands.py  Polls Telegram for messages sent to the bot
   eval_agent.py  Optional daily LLM self-eval (needs ANTHROPIC_API_KEY)
+  github_pr.py   Opens/merges/closes the eval agent's whitelisted-constant
+                 tuning PRs (needs GITHUB_TOKEN)
   report.py      Telegram message formatting
   notify.py      Telegram send
   main.py        Orchestration + auto time-window scheduling + commands
@@ -402,4 +440,6 @@ data/
                         gitignored
   eval_history.json    Rolling ~14-day eval stats log, never resets,
                         gitignored
+  pending_suggestion.json  The one eval-agent tuning suggestion awaiting
+                        your YES/NO, if any; never resets, gitignored
 ```

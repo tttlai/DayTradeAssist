@@ -25,10 +25,25 @@ What it looks at, and why each piece matters:
 
 The model is asked for a short, concrete, data-grounded critique --
 not generic trading advice -- capped in length to fit a Telegram message.
+
+It's also asked for an OPTIONAL structured suggestion: a single tweak to
+one of a pre-approved whitelist of numeric constants (see
+github_pr.TUNABLE_PARAMS). If main.py finds one, it opens a GitHub PR
+proposing exactly that change and asks you to approve it with a plain
+Telegram reply. This stays scoped to simple, bounded numbers on purpose
+-- a bare "yes" is a strong enough review for "this one number changes
+within a safe range," but would not be a safe way to approve an
+arbitrary code diff you never actually saw, which is why anything more
+involved just stays a prose suggestion for you to bring to the
+developer directly, same as before this feature existed.
 """
 import json
+import re
 
 from . import config, timeutil
+from .github_pr import TUNABLE_PARAMS
+
+SUGGESTION_MARKER = "---SUGGESTION---"
 
 EVAL_HISTORY_FILE = config.ROOT_DIR / "data" / "eval_history.json"
 MAX_HISTORY_DAYS = 14
@@ -163,7 +178,62 @@ platitudes:
 
 Keep your entire reply under 280 words -- it's going straight into a Telegram
 message. No preamble, no disclaimers about not being financial advice (that's
-already handled elsewhere), just the analysis."""
+already handled elsewhere), just the analysis.
+
+After your analysis, on its own, add exactly this marker line:
+{SUGGESTION_MARKER}
+followed by ONE line of JSON. If, and only if, today's evidence clearly
+supports changing one specific numeric constant, output:
+{{"param": "<name>", "new_value": <number>, "reason": "<one short sentence>"}}
+<name> MUST be exactly one of: {", ".join(TUNABLE_PARAMS.keys())}
+<new_value> MUST be within its allowed range: {
+        ", ".join(f"{k} in [{v['min']}, {v['max']}]" for k, v in TUNABLE_PARAMS.items())
+    }
+If you don't have a specific, evidence-backed change to propose today (this
+should be the common case -- most days don't warrant a change), output
+exactly: NONE
+Do not propose a change based on one day's data alone unless it's a very
+clear-cut case; prefer NONE when in doubt."""
+
+
+def split_eval_response(raw: str) -> tuple[str, dict | None]:
+    """Splits the model's response into (prose, suggestion-or-None).
+    Validates the suggestion strictly before trusting it at all: must
+    name a whitelisted param, must be a real number, clamped to that
+    param's safe range regardless of what was asked for. Any parsing or
+    validation failure is treated the same as an explicit NONE -- a
+    malformed suggestion just means no PR gets opened, never a crash."""
+    if SUGGESTION_MARKER not in raw:
+        return raw.strip(), None
+
+    prose, _, rest = raw.partition(SUGGESTION_MARKER)
+    prose = prose.strip()
+    rest = rest.strip()
+
+    if rest.upper().startswith("NONE"):
+        return prose, None
+
+    match = re.search(r"\{.*\}", rest, re.DOTALL)
+    if not match:
+        print("[eval] suggestion marker present but no JSON found -- treating as no suggestion")
+        return prose, None
+
+    try:
+        suggestion = json.loads(match.group(0))
+        param = suggestion["param"]
+        new_value = float(suggestion["new_value"])
+        reason = str(suggestion.get("reason", "")).strip()
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+        print(f"[eval] couldn't parse suggestion JSON ({e.__class__.__name__}), treating as no suggestion")
+        return prose, None
+
+    spec = TUNABLE_PARAMS.get(param)
+    if not spec:
+        print(f"[eval] suggested param '{param}' isn't whitelisted, ignoring")
+        return prose, None
+
+    clamped = max(spec["min"], min(spec["max"], new_value))
+    return prose, {"param": param, "new_value": clamped, "reason": reason or "(no reason given)"}
 
 
 def call_eval(prompt: str) -> str | None:

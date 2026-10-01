@@ -56,12 +56,15 @@ import json
 import time
 from datetime import time as dtime
 
-from . import config, eval_agent, health, notify, nse_data, report, screener, strategy, telegram_commands, timeutil, tradesim
+from . import config, eval_agent, github_pr, health, notify, nse_data, report, screener, strategy, telegram_commands, timeutil, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
 STATE_FILE = config.ROOT_DIR / "data" / "today_state.json"
 TELEGRAM_STATE_FILE = config.ROOT_DIR / "data" / "telegram_state.json"
+# Persists across days (not wiped by the daily reset) -- a suggestion from
+# the eval agent waits here until you reply YES/NO, however long that takes.
+PENDING_SUGGESTION_FILE = config.ROOT_DIR / "data" / "pending_suggestion.json"
 
 WATCHLIST_WINDOW = (dtime(8, 40), dtime(9, 5))
 SUMMARY_WINDOW = (dtime(15, 35), dtime(16, 0))
@@ -132,15 +135,57 @@ def _save_last_update_id(update_id: int):
     TELEGRAM_STATE_FILE.write_text(json.dumps({"last_update_id": update_id}))
 
 
+def load_pending_suggestion() -> dict | None:
+    if not PENDING_SUGGESTION_FILE.exists():
+        return None
+    try:
+        return json.loads(PENDING_SUGGESTION_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_pending_suggestion(data: dict):
+    PENDING_SUGGESTION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PENDING_SUGGESTION_FILE.write_text(json.dumps(data))
+
+
+def clear_pending_suggestion():
+    if PENDING_SUGGESTION_FILE.exists():
+        PENDING_SUGGESTION_FILE.unlink()
+
+
 def handle_commands():
     """Checks for anything you've sent the bot since the last run and
-    replies. Currently understands /health (and /status as an alias)."""
+    replies. Understands /health (and /status), plus YES/NO -- but only
+    the latter when there's an actual pending eval-agent suggestion
+    waiting; a bare "yes" typed any other time just falls through to the
+    unrecognized-command reply, so this can't be accidentally triggered
+    by casual chat with the bot."""
     last_id = _load_last_update_id()
     messages, new_last_id = telegram_commands.get_new_messages(last_id)
 
     for text in messages:
         cmd = text.split("@")[0].strip().lower()
-        if cmd in ("/health", "/status"):
+        pending = load_pending_suggestion()
+
+        if pending and cmd in ("yes", "y", "/approve", "approve"):
+            print(f"[eval] approved: {pending['param']} -> {pending['new_value']} (PR #{pending['pr_number']})")
+            if github_pr.merge_pr(pending["pr_number"]):
+                notify.send_message(
+                    f"✅ Merged: *{pending['param']}* -> {pending['new_value']}. "
+                    "Railway will redeploy with the new value shortly."
+                )
+            else:
+                notify.send_message(
+                    f"⚠️ Couldn't merge the PR -- check it directly: {pending['pr_url']}"
+                )
+            clear_pending_suggestion()
+        elif pending and cmd in ("no", "n", "/reject", "reject"):
+            print(f"[eval] rejected: {pending['param']} -> {pending['new_value']} (PR #{pending['pr_number']})")
+            github_pr.close_pr(pending["pr_number"])
+            notify.send_message(f"Dismissed — *{pending['param']}* suggestion rejected, PR closed.")
+            clear_pending_suggestion()
+        elif cmd in ("/health", "/status"):
             print("[health] /health command received, running check")
             notify.send_message(health.run_health_check())
         elif cmd == "/start":
@@ -362,17 +407,50 @@ def run_eval():
 
     history = eval_agent.load_eval_history()
     prompt = eval_agent.build_prompt(candidates, outcomes, confirmed_results, history)
-    eval_text = eval_agent.call_eval(prompt)
+    raw = eval_agent.call_eval(prompt)
 
     today = timeutil.now_ist().strftime("%d %b %Y")
-    if eval_text:
-        notify.send_message(f"*Daily Eval — {today}*\n\n{eval_text}")
-    else:
-        notify.send_message(
-            f"*Daily Eval — {today}*\n\n"
+    lines = [f"*Daily Eval — {today}*", ""]
+
+    if raw is None:
+        lines.append(
             "⚠️ Couldn't generate today's eval (not configured, or the LLM call "
             "failed) -- check Railway logs."
         )
+    else:
+        prose, suggestion = eval_agent.split_eval_response(raw)
+        lines.append(prose)
+
+        already_pending = load_pending_suggestion()
+        if already_pending:
+            lines.append(
+                f"\n_A suggestion is still awaiting your reply: {already_pending['param']} -> "
+                f"{already_pending['new_value']} — {already_pending['reason']}. "
+                f"Reply YES or NO. PR: {already_pending['pr_url']}_"
+            )
+        elif suggestion:
+            pr = github_pr.open_tuning_pr(suggestion["param"], suggestion["new_value"], suggestion["reason"])
+            if pr:
+                save_pending_suggestion(
+                    {
+                        "param": suggestion["param"],
+                        "new_value": suggestion["new_value"],
+                        "reason": suggestion["reason"],
+                        "pr_number": pr["number"],
+                        "pr_url": pr["url"],
+                    }
+                )
+                lines.append(
+                    f"\n*Suggested change:* `{suggestion['param']}` -> {suggestion['new_value']}\n"
+                    f"{suggestion['reason']}\nPR: {pr['url']}\n\nReply YES to merge, or NO to dismiss."
+                )
+            else:
+                lines.append(
+                    f"\n_Suggested `{suggestion['param']}` -> {suggestion['new_value']}, but couldn't "
+                    "open a PR (GITHUB_TOKEN not configured, or the request failed) -- check Railway logs._"
+                )
+
+    notify.send_message("\n".join(lines))
 
     outcome_counts = {}
     for r in confirmed_results:

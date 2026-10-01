@@ -57,6 +57,17 @@ REQUIRE_VWAP_CONFIRMATION = _get_bool("REQUIRE_VWAP_CONFIRMATION", True)
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 EVAL_MODEL = os.getenv("EVAL_MODEL", "claude-sonnet-5")
 
+# Lets the eval agent open a GitHub PR proposing a tweak to one of a
+# pre-approved whitelist of numeric constants (src/github_pr.py), which
+# you approve or reject by replying to the Telegram message that names
+# it. Optional -- without GITHUB_TOKEN set, this step is skipped and the
+# eval just gives its prose analysis as before. Use a fine-grained PAT
+# scoped to ONLY this one repo, with Contents + Pull requests read/write
+# and nothing else.
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPO = os.getenv("GITHUB_REPO", "")  # "owner/repo"
+GITHUB_BASE_BRANCH = os.getenv("GITHUB_BASE_BRANCH", "master")
+
 UNIVERSE_CSV = ROOT_DIR / "data" / "universe.csv"
 SCRIP_MASTER_URL = (
     "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
