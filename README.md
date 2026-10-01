@@ -120,19 +120,21 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    shouldn't warrant a change), it opens a GitHub PR tweaking exactly one
    of a pre-approved whitelist of numeric constants (`VOLUME_CONFIRM_MULTIPLE`,
    `STOP_R_MULTIPLE`, `TARGET_R_MULTIPLE`), clamped to a safe range
-   regardless of what it asks for. You approve or reject it with a plain
-   **YES** or **NO** reply in Telegram — approving merges the PR (Railway
-   redeploys with the new value), rejecting closes it unmerged. This is
-   deliberately scoped to simple, bounded numbers: a bare "yes" is a
-   strong enough review for "this one number changes within a safe
-   range," but wouldn't be a safe way to approve an arbitrary code diff
-   you never actually saw — anything more involved than a whitelisted
-   constant just stays a prose suggestion for you to bring to the
-   developer directly, same as before this existed. A bare "yes"/"no"
-   only ever does anything when a suggestion is actually pending; sent
-   any other time, it's just treated as an unrecognized command, so
-   there's no risk of accidentally triggering it through casual chat
-   with the bot.
+   regardless of what it asks for. You respond with a plain **YES**, **NO**,
+   or **PASS** reply in Telegram — YES merges the PR (Railway redeploys
+   with the new value), NO closes it unmerged (you've decided against
+   it), and PASS does the same thing as NO (closes without merging) but
+   for when you simply don't want to decide either way rather than
+   actively rejecting the idea. This is deliberately scoped to simple,
+   bounded numbers: a bare reply is a strong enough review for "this one
+   number changes within a safe range," but wouldn't be a safe way to
+   approve an arbitrary code diff you never actually saw — anything more
+   involved than a whitelisted constant just stays a prose suggestion for
+   you to bring to the developer directly, same as before this existed.
+   None of YES/NO/PASS do anything unless a suggestion is actually
+   pending; sent any other time, they're just treated as an unrecognized
+   command, so there's no risk of accidentally triggering one through
+   casual chat with the bot.
 
 ### Reliability
 
@@ -271,8 +273,10 @@ Skip this entirely to leave the eval phase off — without
    it just never proposes a parameter change or opens a PR.
 3. When it does propose one, you'll get a Telegram message naming the
    exact constant, its suggested new value, and a PR link. Reply **YES**
-   to merge it (Railway redeploys with the new value) or **NO** to close
-   it without merging. Only one suggestion is ever pending at a time.
+   to merge it (Railway redeploys with the new value), **NO** to reject
+   and close it, or **PASS**/**SKIP** to close it without merging when you
+   just don't want to decide either way. Only one suggestion is ever
+   pending at a time.
 
 ### 4. Local run (optional, to test before deploying)
 
@@ -441,5 +445,5 @@ data/
   eval_history.json    Rolling ~14-day eval stats log, never resets,
                         gitignored
   pending_suggestion.json  The one eval-agent tuning suggestion awaiting
-                        your YES/NO, if any; never resets, gitignored
+                        your YES/NO/PASS, if any; never resets, gitignored
 ```
