@@ -243,7 +243,7 @@ def run_confirm(window_key: str):
         for c in pending:
             plan = strategy.build_plan(c, len(candidates))
             try:
-                plan = strategy.check_confirmation(api, c, plan)
+                plan = strategy.check_confirmation(api, c, plan, len(candidates))
             except Exception as e:
                 # One stock's API hiccup shouldn't abort the whole window --
                 # if it did, confirm_checks_done below would never get

@@ -70,7 +70,12 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    off if it doesn't end up helping. Once a stock triggers it's not
    re-checked again that day. Checking isn't a single
    9:35 snapshot — a breakout that happens at 11:20 instead of 9:20 still
-   gets caught. The **first** check (09:20) always sends a full status
+   gets caught. When a stock does confirm, its stop-loss/target/quantity
+   are fully recomputed around the real confirmed price, not left as
+   whatever was computed from the morning's watchlist trigger level
+   (confirmed necessary in production: a stock confirmed at 13:20 had
+   already drifted 7% past its original trigger, leaving a stale target
+   sitting on the wrong side of the real entry). The **first** check (09:20) always sends a full status
    message (same as before); **later** checks stay silent unless something
    *new* triggered, so you're not getting a repeat "still nothing" message
    every hour — a new trigger gets its own focused alert instead. Checks

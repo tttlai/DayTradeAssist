@@ -39,6 +39,23 @@ class TradePlan:
     circuit_history: bool = False  # hit a circuit limit in the last 10 days
 
 
+def _compute_stop_target(
+    direction: str, entry: float, atr: float,
+    stop_multiple: float = STOP_R_MULTIPLE,
+    target_multiple: float = TARGET_R_MULTIPLE,
+) -> tuple[float, float]:
+    """Shared by build_plan() (around the watchlist-time trigger level)
+    and check_confirmation() (around the real confirmed entry price) so
+    the two can never drift out of sync with each other."""
+    if direction == "LONG":
+        stop_loss = round(entry - stop_multiple * atr, 2)
+        target = round(entry + target_multiple * atr, 2)
+    else:
+        stop_loss = round(entry + stop_multiple * atr, 2)
+        target = round(entry - target_multiple * atr, 2)
+    return stop_loss, target
+
+
 def build_plan(
     cand: Candidate,
     num_picks: int,
@@ -51,12 +68,11 @@ def build_plan(
     touching what's actually running."""
     if cand.direction == "LONG":
         entry = round(cand.trigger_level * 1.001, 2)
-        stop_loss = round(entry - stop_multiple * cand.atr, 2)
-        target = round(entry + target_multiple * cand.atr, 2)
     else:
         entry = round(cand.trigger_level * 0.999, 2)
-        stop_loss = round(entry + stop_multiple * cand.atr, 2)
-        target = round(entry - target_multiple * cand.atr, 2)
+    stop_loss, target = _compute_stop_target(
+        cand.direction, entry, cand.atr, stop_multiple, target_multiple
+    )
 
     qty = risk.position_size(entry, stop_loss, num_picks)
 
@@ -77,9 +93,21 @@ def build_plan(
 VOLUME_CONFIRM_MULTIPLE = 1.2  # today's pace must beat this x the 20-day average pace
 
 
-def check_confirmation(api, cand: Candidate, plan: TradePlan) -> TradePlan:
+def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) -> TradePlan:
     """Intraday re-check: did price actually cross the trigger with volume
-    (and, if enabled, on the right side of VWAP)?"""
+    (and, if enabled, on the right side of VWAP)?
+
+    num_picks is needed here, not just at build_plan() time, because a
+    confirmed trade gets its stop-loss/target/quantity fully recomputed
+    around the REAL confirmed price below -- not just the entry label
+    updated while leaving stale levels computed from the watchlist-time
+    trigger. Confirmation can now happen as late as 14:00 (vs. the
+    original single 9:20-9:45 window), so price can have drifted far
+    enough from this morning's trigger that the old stop/target no
+    longer bracket the real entry sensibly -- confirmed in production:
+    a SHORT whose price had already fallen past where the target was
+    computed, relative to the stale trigger, left a target sitting
+    *above* the real entry instead of below it."""
     ltp = api.get_ltp(cand.symbol, cand.token)
     if ltp is None:
         print(f"[confirm] {cand.symbol}: get_ltp returned None -- Angel One API/token issue?")
@@ -117,6 +145,8 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan) -> TradePlan:
     if price_broke_trigger and volume_confirms and vwap_confirms:
         plan.status = "ENTER NOW"
         plan.entry_trigger = round(ltp, 2)
+        plan.stop_loss, plan.target = _compute_stop_target(cand.direction, plan.entry_trigger, cand.atr)
+        plan.quantity = risk.position_size(plan.entry_trigger, plan.stop_loss, num_picks)
     else:
         plan.status = "NO TRIGGER - SKIP"
 
