@@ -105,6 +105,15 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    with a ⚠️ note rather than silently costing the whole summary, and if
    the summary window closes without ever completing, you get a fallback
    "couldn't generate today's summary" notice instead of silence.
+4. **Daily eval (~15:45-17:00 IST, after the summary)** — optional, needs
+   `ANTHROPIC_API_KEY` (see "Daily eval agent" below). Fetches what
+   *actually* happened today to every watchlist stock, not just the
+   confirmed ones — including the ones the volume/VWAP filters rejected —
+   and asks an LLM to assess whether the confirmation criteria look too
+   strict, too loose, or about right, using the day's real price action as
+   evidence, plus a short rolling history so it's not judging one day in
+   isolation. This is the one phase in the whole project with a real
+   recurring cost (a per-day API charge); everything else is free.
 
 ### Reliability
 
@@ -167,6 +176,7 @@ needs *live* data:
 | Backtest | No — historical daily candles | NSE bhavcopy (`src/nse_data.py`) | No |
 | Confirmation | Yes — live price/volume | Angel One SmartAPI | Yes |
 | End-of-day summary | Yes — real intraday candles | Angel One SmartAPI | Yes |
+| Daily eval (optional) | Yes — today's full intraday candles for every watchlist stock | Angel One SmartAPI + Anthropic API | Yes, plus a paid LLM call |
 | `/health` check | Checks both | Both | Attempts an Angel login |
 
 NSE publishes a free "bhavcopy" file each trading day with end-of-day
@@ -214,7 +224,21 @@ Three things worth knowing about `src/nse_data.py`:
    **chat id** from the JSON — or just message
    [@userinfobot](https://t.me/userinfobot) to get your own id.
 
-### 3. Local run (optional, to test before deploying)
+### 3. Daily eval agent (optional)
+
+Skip this entirely to leave the eval phase off — without
+`ANTHROPIC_API_KEY` set, it just doesn't run (no error).
+
+1. Get a key at [console.anthropic.com](https://console.anthropic.com) —
+   note this is a **separate product** from claude.ai or Claude Code,
+   billed per API call. Set it as `ANTHROPIC_API_KEY`.
+2. This is the one real recurring cost in this project — one LLM call a
+   day, with maybe a few thousand tokens of context, likely a fraction of
+   a cent to a few cents depending on the model. `EVAL_MODEL` defaults to
+   `claude-sonnet-5`; switch to a cheaper/faster model if you want to
+   trim that further.
+
+### 4. Local run (optional, to test before deploying)
 
 ```bash
 pip install -r requirements.txt
@@ -223,6 +247,7 @@ python -m src.main --mode watchlist   # force the pre-market report now
 python -m src.main --mode confirm     # force the FIRST (09:20) confirmation check now
 python -m src.main --mode confirm --window 1120   # force a specific later check instead
 python -m src.main --mode summary     # force the end-of-day P&L summary now
+python -m src.main --mode eval        # force the daily eval now (needs ANTHROPIC_API_KEY)
 python -m src.main --mode health      # run the health check immediately
 ```
 
@@ -259,7 +284,7 @@ defaults as-is based on this; see the outcome breakdown the backtest
 prints (`Outcomes: STOPPED n%, TARGET n%, TIME_EXIT n%`) before changing
 these yourself.
 
-### 4. Deploy to Railway
+### 5. Deploy to Railway
 
 **Do not use Railway's Cron Schedule setting for this service.** Cron
 Schedule mode tears the container's filesystem down between every
@@ -365,6 +390,7 @@ src/
   backtest.py    Historical replay of the screener over daily candles
   health.py      /health check: Angel One reachability + login
   telegram_commands.py  Polls Telegram for messages sent to the bot
+  eval_agent.py  Optional daily LLM self-eval (needs ANTHROPIC_API_KEY)
   report.py      Telegram message formatting
   notify.py      Telegram send
   main.py        Orchestration + auto time-window scheduling + commands
@@ -373,5 +399,7 @@ data/
   today_state.json     Runtime state (watchlist + confirmed trades + sent
                         flags), resets daily, gitignored
   telegram_state.json  Last processed Telegram update ID, never resets,
+                        gitignored
+  eval_history.json    Rolling ~14-day eval stats log, never resets,
                         gitignored
 ```

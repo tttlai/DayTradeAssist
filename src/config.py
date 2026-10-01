@@ -49,6 +49,14 @@ SQUARE_OFF_TIME = os.getenv("SQUARE_OFF_TIME", "15:15")
 # disable if it turns out not to help.
 REQUIRE_VWAP_CONFIRMATION = _get_bool("REQUIRE_VWAP_CONFIRMATION", True)
 
+# Daily LLM-powered eval agent (src/eval_agent.py) -- optional. Without an
+# API key it just skips itself (no error), same as Telegram being
+# unconfigured. This is the one real recurring cost in this project: a
+# small per-day charge to your Anthropic account for one API call, unlike
+# everything else here which is free.
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+EVAL_MODEL = os.getenv("EVAL_MODEL", "claude-sonnet-5")
+
 UNIVERSE_CSV = ROOT_DIR / "data" / "universe.csv"
 SCRIP_MASTER_URL = (
     "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"

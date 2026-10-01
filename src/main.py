@@ -56,7 +56,7 @@ import json
 import time
 from datetime import time as dtime
 
-from . import config, health, notify, nse_data, report, screener, strategy, telegram_commands, timeutil, tradesim
+from . import config, eval_agent, health, notify, nse_data, report, screener, strategy, telegram_commands, timeutil, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
@@ -65,6 +65,10 @@ TELEGRAM_STATE_FILE = config.ROOT_DIR / "data" / "telegram_state.json"
 
 WATCHLIST_WINDOW = (dtime(8, 40), dtime(9, 5))
 SUMMARY_WINDOW = (dtime(15, 35), dtime(16, 0))
+# Runs after the summary, can take its time, but must finish by 17:00 IST
+# (well clear of 5pm). See src/eval_agent.py -- the one phase in this
+# project with a real recurring cost (an Anthropic API call/day).
+EVAL_WINDOW = (dtime(15, 45), dtime(17, 0))
 
 # Roughly hourly re-checks. Stops at 14:00-14:15 rather than continuing to
 # market close -- a trade confirmed any later has too little runway before
@@ -95,6 +99,8 @@ def _default_state() -> dict:
         "watchlist_failure_notified": False,
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "sent_summary": False,
+        "summary_results": [],  # confirmed trades' computed outcomes, reused by run_eval()
+        "sent_eval": False,
     }
 
 
@@ -282,6 +288,7 @@ def run_summary():
     if not plans:
         notify.send_message(report.format_daily_summary([]))
         state["sent_summary"] = True
+        state["summary_results"] = []
         save_full_state(state)
         return
 
@@ -310,9 +317,78 @@ def run_summary():
 
         notify.send_message(report.format_daily_summary(results, failed_symbols))
         state["sent_summary"] = True
+        # Persisted (not just the Telegram text) so run_eval() can reuse these
+        # computed outcomes without re-fetching intraday data / re-running
+        # tradesim for the same confirmed trades.
+        state["summary_results"] = [
+            {
+                "symbol": plan.symbol,
+                "direction": plan.direction,
+                "entry": plan.entry_trigger,
+                "exit": sim.exit_price,
+                "outcome": sim.outcome,
+                "pnl": trade_pnl,
+            }
+            for plan, sim, trade_pnl in results
+        ]
         save_full_state(state)
     finally:
         api.logout()
+
+
+def run_eval():
+    """Daily self-eval (src/eval_agent.py): fetches what actually happened
+    to every watchlist stock today (not just confirmed ones), combines it
+    with the day's confirmed-trade outcomes and recent history, and asks
+    an LLM for a short, data-grounded critique. Silently no-ops if
+    ANTHROPIC_API_KEY isn't set -- this is opt-in, the one phase in this
+    project with a real recurring cost."""
+    state = load_full_state()
+    candidates = [Candidate(**c) for c in state.get("candidates", [])]
+    confirmed_results = state.get("summary_results", [])
+
+    if not candidates:
+        notify.send_message("*Daily Eval*\n\nNo watchlist today, nothing to evaluate.")
+        state["sent_eval"] = True
+        save_full_state(state)
+        return
+
+    api = AngelAPI()
+    api.login()
+    try:
+        outcomes = eval_agent.fetch_watchlist_outcomes(api, candidates)
+    finally:
+        api.logout()
+
+    history = eval_agent.load_eval_history()
+    prompt = eval_agent.build_prompt(candidates, outcomes, confirmed_results, history)
+    eval_text = eval_agent.call_eval(prompt)
+
+    today = timeutil.now_ist().strftime("%d %b %Y")
+    if eval_text:
+        notify.send_message(f"*Daily Eval — {today}*\n\n{eval_text}")
+    else:
+        notify.send_message(
+            f"*Daily Eval — {today}*\n\n"
+            "⚠️ Couldn't generate today's eval (not configured, or the LLM call "
+            "failed) -- check Railway logs."
+        )
+
+    outcome_counts = {}
+    for r in confirmed_results:
+        outcome_counts[r["outcome"]] = outcome_counts.get(r["outcome"], 0) + 1
+    eval_agent.append_eval_history(
+        {
+            "date": today,
+            "watchlist_count": len(candidates),
+            "confirmed_count": len(confirmed_results),
+            "outcomes": outcome_counts,
+            "total_pnl": sum(r["pnl"] for r in confirmed_results),
+        }
+    )
+
+    state["sent_eval"] = True
+    save_full_state(state)
 
 
 def run_auto():
@@ -387,6 +463,24 @@ def run_auto():
         save_full_state(state)
         return
 
+    if EVAL_WINDOW[0] <= t <= EVAL_WINDOW[1] and state.get("sent_summary") and not state.get("sent_eval"):
+        print(f"[auto] {t} IST in eval window, not yet sent -> running eval")
+        run_eval()
+        return
+
+    if t > EVAL_WINDOW[1] and state.get("sent_summary") and not state.get("sent_eval"):
+        # Same fallback pattern as watchlist/confirm/summary -- if the eval
+        # window closes without ever completing, say so rather than just
+        # never sending anything and leaving sent_eval permanently False.
+        print(f"[auto] {t} IST - eval window expired without completing, sending fallback notice")
+        notify.send_message(
+            "*Daily Eval*\n\n⚠️ Couldn't generate today's eval due to a technical "
+            "issue -- check Railway logs around 15:45-17:00 IST."
+        )
+        state["sent_eval"] = True
+        save_full_state(state)
+        return
+
     print(f"[auto] {t} IST - nothing to do (outside windows or already sent today)")
 
 
@@ -408,7 +502,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
-        choices=["watchlist", "confirm", "summary", "health", "auto", "serve"],
+        choices=["watchlist", "confirm", "summary", "eval", "health", "auto", "serve"],
         default="auto",
     )
     parser.add_argument(
@@ -425,6 +519,8 @@ def main():
         run_confirm(args.window)
     elif args.mode == "summary":
         run_summary()
+    elif args.mode == "eval":
+        run_eval()
     elif args.mode == "health":
         notify.send_message(health.run_health_check())
     elif args.mode == "serve":
