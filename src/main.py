@@ -180,18 +180,10 @@ def handle_commands():
                     f"⚠️ Couldn't merge the PR -- check it directly: {pending['pr_url']}"
                 )
             clear_pending_suggestion()
-        elif pending and cmd in ("no", "n", "/reject", "reject", "pass", "skip", "/pass", "/skip"):
-            # Same action either way (close the PR, don't merge) -- just a
-            # softer acknowledgment for "pass"/"skip" than "no", since
-            # declining to act on a suggestion isn't the same as deciding
-            # it was a bad idea.
-            is_pass = cmd in ("pass", "skip", "/pass", "/skip")
-            print(f"[eval] {'passed' if is_pass else 'rejected'}: {pending['param']} -> {pending['new_value']} (PR #{pending['pr_number']})")
+        elif pending and cmd in ("no", "n", "/reject", "reject"):
+            print(f"[eval] rejected: {pending['param']} -> {pending['new_value']} (PR #{pending['pr_number']})")
             github_pr.close_pr(pending["pr_number"])
-            if is_pass:
-                notify.send_message(f"Skipped — no action taken on *{pending['param']}*, PR closed.")
-            else:
-                notify.send_message(f"Dismissed — *{pending['param']}* suggestion rejected, PR closed.")
+            notify.send_message(f"Dismissed — *{pending['param']}* suggestion rejected, PR closed.")
             clear_pending_suggestion()
         elif cmd in ("/health", "/status"):
             print("[health] /health command received, running check")
@@ -434,7 +426,7 @@ def run_eval():
             lines.append(
                 f"\n_A suggestion is still awaiting your reply: {already_pending['param']} -> "
                 f"{already_pending['new_value']} — {already_pending['reason']}. "
-                f"Reply YES, NO, or PASS. PR: {already_pending['pr_url']}_"
+                f"Reply YES or NO. PR: {already_pending['pr_url']}_"
             )
         elif suggestion:
             pr = github_pr.open_tuning_pr(suggestion["param"], suggestion["new_value"], suggestion["reason"])
@@ -451,7 +443,7 @@ def run_eval():
                 lines.append(
                     f"\n*Suggested change:* `{suggestion['param']}` -> {suggestion['new_value']}\n"
                     f"{suggestion['reason']}\nPR: {pr['url']}\n\n"
-                    "Reply YES to merge, NO to reject, or PASS to skip without deciding either way."
+                    "Reply YES to merge, or NO to dismiss."
                 )
             else:
                 lines.append(
