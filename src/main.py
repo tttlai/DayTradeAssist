@@ -413,10 +413,8 @@ def run_eval():
     lines = [f"*Daily Eval — {today}*", ""]
 
     if raw is None:
-        lines.append(
-            "⚠️ Couldn't generate today's eval (not configured, or the LLM call "
-            "failed) -- check Railway logs."
-        )
+        reason = (eval_agent.last_error or "unknown").replace("_", " ").replace("*", "").replace("`", "")
+        lines.append(f"⚠️ Couldn't generate today's eval -- reason: {reason}")
     else:
         prose, suggestion = eval_agent.split_eval_response(raw)
         lines.append(prose)

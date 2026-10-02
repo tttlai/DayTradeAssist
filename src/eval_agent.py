@@ -236,11 +236,17 @@ def split_eval_response(raw: str) -> tuple[str, dict | None]:
     return prose, {"param": param, "new_value": clamped, "reason": reason or "(no reason given)"}
 
 
+last_error: str | None = None
+
+
 def call_eval(prompt: str) -> str | None:
-    """Returns the eval text, or None if unconfigured or the call failed.
-    Never raises."""
+    """Returns the eval text, or None if unconfigured or the call failed
+    (the reason is left in `last_error`). Never raises."""
+    global last_error
+    last_error = None
     if not config.ANTHROPIC_API_KEY:
         print("[eval] ANTHROPIC_API_KEY not configured, skipping eval")
+        last_error = "ANTHROPIC_API_KEY is not set on the Railway service"
         return None
 
     try:
@@ -255,4 +261,5 @@ def call_eval(prompt: str) -> str | None:
         return response.content[0].text.strip()
     except Exception as e:
         print(f"[eval] LLM call failed: {e.__class__.__name__}: {e}")
+        last_error = f"{e.__class__.__name__}: {str(e)[:200]}"
         return None
