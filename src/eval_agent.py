@@ -47,7 +47,10 @@ SUGGESTION_MARKER = "---SUGGESTION---"
 
 EVAL_HISTORY_FILE = config.ROOT_DIR / "data" / "eval_history.json"
 MAX_HISTORY_DAYS = 14
-MAX_EVAL_TOKENS = 700  # keeps the response comfortably under Telegram's 4096-char limit
+# Headroom for models that emit a thinking block before the answer (thinking
+# counts toward max_tokens); the prompt itself asks for a short reply, which
+# is what keeps the message under Telegram's 4096-char limit.
+MAX_EVAL_TOKENS = 2500
 
 
 def load_eval_history() -> list[dict]:
@@ -258,7 +261,12 @@ def call_eval(prompt: str) -> str | None:
             max_tokens=MAX_EVAL_TOKENS,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text.strip()
+        text = "".join(b.text for b in response.content if getattr(b, "type", None) == "text").strip()
+        if not text:
+            last_error = f"empty response (stop_reason={response.stop_reason})"
+            print(f"[eval] LLM returned no text: {last_error}")
+            return None
+        return text
     except Exception as e:
         print(f"[eval] LLM call failed: {e.__class__.__name__}: {e}")
         last_error = f"{e.__class__.__name__}: {str(e)[:200]}"
