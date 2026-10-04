@@ -461,6 +461,16 @@ def run_eval():
             "confirmed_count": len(confirmed_results),
             "outcomes": outcome_counts,
             "total_pnl": sum(r["pnl"] for r in confirmed_results),
+            "watchlist": [
+                {
+                    "symbol": o["symbol"],
+                    "direction": o["direction"],
+                    "approach_pct": o.get("approach_pct"),
+                    "crossed_trigger": o.get("crossed_trigger"),
+                }
+                for o in outcomes
+                if "data" not in o
+            ],
         }
     )
 

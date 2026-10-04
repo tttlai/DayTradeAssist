@@ -70,6 +70,19 @@ def append_eval_history(entry: dict):
     EVAL_HISTORY_FILE.write_text(json.dumps(history))
 
 
+def approach_pct(direction, last_close, trigger, day_high, day_low) -> float | None:
+    """How far price travelled from yesterday's close toward the trigger, as
+    a percentage (100 = reached it, >100 = went through). None if the
+    trigger isn't actually on the far side of last_close."""
+    if direction == "LONG":
+        distance, travelled = trigger - last_close, day_high - last_close
+    else:
+        distance, travelled = last_close - trigger, last_close - day_low
+    if distance <= 0:
+        return None
+    return round(max(travelled, 0.0) / distance * 100, 1)
+
+
 def fetch_watchlist_outcomes(api, candidates) -> list[dict]:
     """For every watchlist candidate -- confirmed or not -- fetch today's
     full intraday candles and report what actually happened: did price
@@ -101,17 +114,20 @@ def fetch_watchlist_outcomes(api, candidates) -> list[dict]:
                 crossed, cross_time = True, timeutil.candle_time_str(ts)
                 break
 
+        day_high = max(cd[2] for cd in intraday)
+        day_low = min(cd[3] for cd in intraday)
         outcomes.append(
             {
                 "symbol": c.symbol,
                 "direction": c.direction,
                 "trigger": c.trigger_level,
                 "score": round(c.score, 2),
+                "approach_pct": approach_pct(c.direction, c.last_close, c.trigger_level, day_high, day_low),
                 "atr_pct": round(c.atr / c.last_close * 100, 2) if c.last_close else None,
                 "crossed_trigger": crossed,
                 "cross_time": cross_time,
-                "day_high": max(cd[2] for cd in intraday),
-                "day_low": min(cd[3] for cd in intraday),
+                "day_high": day_high,
+                "day_low": day_low,
                 "day_close": intraday[-1][4],
             }
         )
@@ -134,6 +150,7 @@ def build_prompt(candidates, outcomes, confirmed_results, history) -> str:
             f"- {c.symbol} {c.direction} | trigger {c.trigger_level} | score {c.score:.2f} | "
             f"ATR% {round(c.atr / c.last_close * 100, 2) if c.last_close else '?'} | "
             f"day range {o.get('day_low', '?')}-{o.get('day_high', '?')}, close {o.get('day_close', '?')} | "
+            f"got {o.get('approach_pct', '?')}% of the way from prior close to trigger | "
             f"{status}"
         )
 
@@ -146,6 +163,12 @@ def build_prompt(candidates, outcomes, confirmed_results, history) -> str:
     history_lines = [
         f"- {h['date']}: {h['watchlist_count']} watchlist, {h['confirmed_count']} confirmed, "
         f"outcomes {h['outcomes']}, P&L Rs {h['total_pnl']:.0f}"
+        + (
+            ", approach% " + ", ".join(
+                f"{w['symbol']} {w['approach_pct']}" for w in h["watchlist"] if w.get("approach_pct") is not None
+            )
+            if h.get("watchlist") else ""
+        )
         for h in history
     ] or ["(no prior history yet)"]
 
