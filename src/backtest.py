@@ -7,8 +7,11 @@ against each day's own daily OHLC to decide the outcome. It does NOT use
 real intraday candle sequencing, so when a day's range touches both
 stop-loss and target we can't tell which happened first from daily bars
 alone and conservatively count it as a stop-out (see src/tradesim.py).
-That biases results pessimistic, never optimistic — treat this as a
-rough lower bound, not a faithful P&L replay. The live end-of-day
+That biases results pessimistic on that point -- but the headline P&L
+is OPTIMISTIC in another: it fills every trade at the trigger price, even
+when the prior close was already past it or the day opened past it (see
+the "How the trades actually 'triggered'" section of the report, which
+re-simulates those at the open). Trust that section over the headline. The live end-of-day
 summary (`python -m src.main --mode summary`, or the automatic run each
 afternoon) is far more accurate since it replays real 15-minute intraday
 candles for trades you actually got alerted on.
@@ -23,7 +26,7 @@ Usage:
 import argparse
 from collections import defaultdict
 
-from . import config, nse_data, risk, screener, strategy, tradesim
+from . import config, eval_agent, nse_data, risk, screener, strategy, tradesim
 
 LOOKBACK = 25  # matches indicators.* minimum candle requirements
 
@@ -90,7 +93,7 @@ def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=No
             if not today_candle:
                 continue
 
-            _, _o, h, l, _c, _v = today_candle
+            _, o, h, l, _c, _v = today_candle
             triggered = (
                 h >= plan.entry_trigger if cand.direction == "LONG" else l <= plan.entry_trigger
             )
@@ -99,6 +102,34 @@ def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=No
 
             sim = tradesim.walk_candles([today_candle], cand.direction, plan.stop_loss, plan.target)
             trade_pnl = tradesim.pnl(cand.direction, plan.entry_trigger, sim.exit_price, plan.quantity)
+
+            # The simulation above fills at the trigger price. That is only
+            # achievable when price really travels up to the trigger during
+            # the day ("normal"). Two other cases can't fill there:
+            #   already -- the prior close was ALREADY beyond the trigger
+            #              (the 20-day level excludes the latest bar), so
+            #              "triggered" from the first minute;
+            #   gap     -- prior close short of the trigger, but the day
+            #              OPENED beyond it.
+            # For both, the earliest real entry is the open. Re-simulate them
+            # the way the live tool would: entry at the open, stop/target/qty
+            # recomputed around it (see strategy.check_confirmation).
+            already = (
+                cand.last_close >= cand.trigger_level
+                if cand.direction == "LONG"
+                else cand.last_close <= cand.trigger_level
+            )
+            opened_through = o >= plan.entry_trigger if cand.direction == "LONG" else o <= plan.entry_trigger
+            kind = "already" if already else ("gap" if opened_through else "normal")
+            realistic_pnl = trade_pnl
+            if kind != "normal":
+                r_stop, r_target = strategy._compute_stop_target(
+                    cand.direction, o, cand.atr, stop_multiple, target_multiple
+                )
+                r_qty = risk.position_size(o, r_stop, len(picks))
+                r_sim = tradesim.walk_candles([today_candle], cand.direction, r_stop, r_target)
+                realistic_pnl = tradesim.pnl(cand.direction, o, r_sim.exit_price, r_qty) if r_qty > 0 else 0.0
+
             trades.append(
                 {
                     "date": date,
@@ -106,6 +137,11 @@ def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=No
                     "direction": cand.direction,
                     "outcome": sim.outcome,
                     "pnl": trade_pnl,
+                    "kind": kind,
+                    "realistic_pnl": realistic_pnl,
+                    "approach_pct": eval_agent.approach_pct(
+                        cand.direction, cand.last_close, cand.trigger_level, h, l
+                    ),
                 }
             )
 
@@ -158,10 +194,45 @@ def print_report(trades, num_days):
     trading_days_with_trade = len(by_date)
     print(f"Avg P&L / active day (out of {trading_days_with_trade} days with a trade): "
           f"Rs {total_pnl/trading_days_with_trade:,.0f}")
+    print_gap_report(trades)
     print()
     print("NOTE: daily-OHLC approximation, not true intraday sequencing -- see")
     print("module docstring in src/backtest.py before drawing conclusions.")
     print("=" * 60)
+
+
+def _line(label, group, key):
+    if not group:
+        return f"  {label:<46}: none"
+    total = sum(t[key] for t in group)
+    wins = sum(1 for t in group if t[key] > 0)
+    return (
+        f"  {label:<46}: {len(group):>4} trades, win {100*wins/len(group):>4.1f}%, "
+        f"total Rs {total:>8,.0f}, avg Rs {total/len(group):>5,.0f}"
+    )
+
+
+def print_gap_report(trades):
+    """Do trades where the day opened already beyond the trigger make money
+    when filled where they realistically could have been (the open)?"""
+    normal = [t for t in trades if t["kind"] == "normal"]
+    already = [t for t in trades if t["kind"] == "already"]
+    gap = [t for t in trades if t["kind"] == "gap"]
+    far = [t for t in trades if t["approach_pct"] is not None and t["approach_pct"] > 150]
+    near = [t for t in trades if t["approach_pct"] is not None and t["approach_pct"] <= 150]
+    print()
+    print("How the trades actually 'triggered' (headline above fills ALL at trigger):")
+    print(_line("normal: price travelled up to trigger intraday", normal, "pnl"))
+    print(_line("already: prior close was already past trigger", already, "pnl"))
+    print(_line("   ...same trades, realistic fill at open", already, "realistic_pnl"))
+    print(_line("gap: prior close short, day opened past trigger", gap, "pnl"))
+    print(_line("   ...same trades, realistic fill at open", gap, "realistic_pnl"))
+    realistic_total = sum(t["realistic_pnl"] for t in trades)
+    print(f"  Whole backtest with realistic fills             : total Rs {realistic_total:,.0f}")
+    print("Split by day-extreme distance past the trigger (hindsight, not knowable at")
+    print("check time; excludes 'already' trades where the distance is undefined):")
+    print(_line("approach <= 150% of prior-close->trigger distance", near, "pnl"))
+    print(_line("approach  > 150%", far, "pnl"))
 
 
 def main():

@@ -14,7 +14,7 @@ Two stages, matching the two scheduled runs described in the README:
     today's VWAP. Only names that pass all three are promoted to "enter
     now"; the rest are marked "no trigger — skip."
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import config, indicators, risk
 from .screener import Candidate
@@ -37,6 +37,9 @@ class TradePlan:
     token: str = ""
     entered_at: str = ""  # "HH:MM" IST, set once status becomes "ENTER NOW"
     circuit_history: bool = False  # hit a circuit limit in the last 10 days
+    # What each confirmation gate saw on the last check -- lets the eval (and
+    # you) see WHY a stock was skipped, not just that it was.
+    gates: dict = field(default_factory=dict)
 
 
 def _compute_stop_target(
@@ -135,12 +138,25 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
     # this is judged by watching live results, not a historical backtest.
     # REQUIRE_VWAP_CONFIRMATION=false disables it if that doesn't pan out.
     vwap_confirms = True
+    today_vwap = None
     if config.REQUIRE_VWAP_CONFIRMATION:
         today_vwap = indicators.vwap(intraday)
         if today_vwap is None:
             vwap_confirms = False
         else:
             vwap_confirms = ltp > today_vwap if cand.direction == "LONG" else ltp < today_vwap
+
+    plan.gates = {
+        "ltp": ltp,
+        "day_open": intraday[0][1] if intraday else None,
+        "price_broke": price_broke_trigger,
+        "volume_ratio": (
+            round(today_volume_so_far / expected_volume_by_now, 2) if expected_volume_by_now > 0 else None
+        ),
+        "volume_ok": volume_confirms,
+        "vwap": round(today_vwap, 2) if today_vwap is not None else None,
+        "vwap_ok": vwap_confirms,
+    }
 
     if price_broke_trigger and volume_confirms and vwap_confirms:
         plan.status = "ENTER NOW"

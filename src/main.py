@@ -101,6 +101,7 @@ def _default_state() -> dict:
         "sent_watchlist": False,
         "watchlist_failure_notified": False,
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
+        "gate_log": [],  # per-window, per-stock confirmation gate results, reused by run_eval()
         "sent_summary": False,
         "summary_results": [],  # confirmed trades' computed outcomes, reused by run_eval()
         "sent_eval": False,
@@ -317,6 +318,11 @@ def run_confirm(window_key: str):
         else:
             print(f"[confirm:{window_key}] nothing new triggered, staying quiet")
 
+        state["gate_log"] = state.get("gate_log", []) + [
+            {"window": window_key, "symbol": p.symbol, "status": p.status, **p.gates}
+            for p in plans
+            if p.gates
+        ]
         state["confirmed_plans"] = state.get("confirmed_plans", []) + [
             dataclasses.asdict(p) for p in new_triggers
         ]
@@ -406,7 +412,8 @@ def run_eval():
         api.logout()
 
     history = eval_agent.load_eval_history()
-    prompt = eval_agent.build_prompt(candidates, outcomes, confirmed_results, history)
+    gate_log = state.get("gate_log", [])
+    prompt = eval_agent.build_prompt(candidates, outcomes, confirmed_results, history, gate_log)
     raw = eval_agent.call_eval(prompt)
 
     today = timeutil.now_ist().strftime("%d %b %Y")
@@ -467,6 +474,8 @@ def run_eval():
                     "direction": o["direction"],
                     "approach_pct": o.get("approach_pct"),
                     "crossed_trigger": o.get("crossed_trigger"),
+                    "gapped_through": o.get("gapped_through"),
+                    "blocked_by": eval_agent.gate_block_counts(gate_log, o["symbol"]),
                 }
                 for o in outcomes
                 if "data" not in o

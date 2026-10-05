@@ -83,6 +83,36 @@ def approach_pct(direction, last_close, trigger, day_high, day_low) -> float | N
     return round(max(travelled, 0.0) / distance * 100, 1)
 
 
+def gate_block_counts(gate_log, symbol) -> dict:
+    """How many of today's confirm checks each gate failed for this stock."""
+    counts = {"price": 0, "volume": 0, "vwap": 0}
+    for g in gate_log or []:
+        if g.get("symbol") != symbol:
+            continue
+        if not g.get("price_broke"):
+            counts["price"] += 1
+        if not g.get("volume_ok"):
+            counts["volume"] += 1
+        if not g.get("vwap_ok"):
+            counts["vwap"] += 1
+    return counts
+
+
+def format_gate_log(gate_log, symbol) -> str:
+    """One compact line per stock: each check's px/vol/vwap result."""
+    parts = []
+    for g in gate_log or []:
+        if g.get("symbol") != symbol:
+            continue
+        ratio = g.get("volume_ratio")
+        parts.append(
+            f"{g['window']}: px {'Y' if g.get('price_broke') else 'N'}, "
+            f"vol {'?' if ratio is None else f'{ratio}x'} {'ok' if g.get('volume_ok') else 'LOW'}, "
+            f"vwap {'ok' if g.get('vwap_ok') else 'WRONG SIDE'}"
+        )
+    return "; ".join(parts) if parts else "no confirm checks recorded"
+
+
 def fetch_watchlist_outcomes(api, candidates) -> list[dict]:
     """For every watchlist candidate -- confirmed or not -- fetch today's
     full intraday candles and report what actually happened: did price
@@ -116,6 +146,8 @@ def fetch_watchlist_outcomes(api, candidates) -> list[dict]:
 
         day_high = max(cd[2] for cd in intraday)
         day_low = min(cd[3] for cd in intraday)
+        day_open = intraday[0][1]
+        gapped_through = day_open >= c.trigger_level if c.direction == "LONG" else day_open <= c.trigger_level
         outcomes.append(
             {
                 "symbol": c.symbol,
@@ -126,6 +158,8 @@ def fetch_watchlist_outcomes(api, candidates) -> list[dict]:
                 "atr_pct": round(c.atr / c.last_close * 100, 2) if c.last_close else None,
                 "crossed_trigger": crossed,
                 "cross_time": cross_time,
+                "day_open": day_open,
+                "gapped_through": gapped_through,
                 "day_high": day_high,
                 "day_low": day_low,
                 "day_close": intraday[-1][4],
@@ -134,7 +168,7 @@ def fetch_watchlist_outcomes(api, candidates) -> list[dict]:
     return outcomes
 
 
-def build_prompt(candidates, outcomes, confirmed_results, history) -> str:
+def build_prompt(candidates, outcomes, confirmed_results, history, gate_log=None) -> str:
     today = timeutil.now_ist().strftime("%d %b %Y")
 
     watchlist_lines = []
@@ -149,9 +183,10 @@ def build_prompt(candidates, outcomes, confirmed_results, history) -> str:
         watchlist_lines.append(
             f"- {c.symbol} {c.direction} | trigger {c.trigger_level} | score {c.score:.2f} | "
             f"ATR% {round(c.atr / c.last_close * 100, 2) if c.last_close else '?'} | "
+            f"open {o.get('day_open', '?')}{' (GAPPED THROUGH trigger at the open)' if o.get('gapped_through') else ''}, "
             f"day range {o.get('day_low', '?')}-{o.get('day_high', '?')}, close {o.get('day_close', '?')} | "
             f"got {o.get('approach_pct', '?')}% of the way from prior close to trigger | "
-            f"{status}"
+            f"{status}\n    confirm checks -- {format_gate_log(gate_log, c.symbol)}"
         )
 
     confirmed_lines = [
@@ -166,6 +201,11 @@ def build_prompt(candidates, outcomes, confirmed_results, history) -> str:
         + (
             ", approach% " + ", ".join(
                 f"{w['symbol']} {w['approach_pct']}" for w in h["watchlist"] if w.get("approach_pct") is not None
+            )
+            + "; checks failed (px/vol/vwap) " + ", ".join(
+                f"{w['symbol']}{' GAP' if w.get('gapped_through') else ''} "
+                + "/".join(str(w["blocked_by"].get(k, 0)) for k in ("price", "volume", "vwap"))
+                for w in h["watchlist"] if w.get("blocked_by")
             )
             if h.get("watchlist") else ""
         )
