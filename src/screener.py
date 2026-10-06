@@ -54,6 +54,13 @@ def load_universe():
         return [row["symbol"] for row in csv.DictReader(f)]
 
 
+def universe_symbols() -> list[str] | None:
+    """Symbols to fetch history for: the CSV list, or None meaning "every
+    stock in the bhavcopy" in liquid mode (liquidity/price floors are then
+    applied per stock inside evaluate())."""
+    return None if config.UNIVERSE_MODE == "liquid" else load_universe()
+
+
 NEAR_LEVEL_PCT = 0.015  # within 1.5% of the 20-day high/low
 MIN_AVG_VOLUME = 200_000  # skip illiquid names — hard to fill/exit at size
 MIN_ATR_PCT = 0.008  # skip stocks too sleepy to move meaningfully intraday
@@ -68,10 +75,16 @@ def evaluate(symbol: str, candles) -> Candidate | None:
     if avg_vol_20 < MIN_AVG_VOLUME:
         return None
 
+    last_close = indicators.closes(candles)[-1]
+    if last_close < config.UNIVERSE_MIN_PRICE:
+        return None
+    avg_value_20 = float((indicators.closes(candles)[-20:] * indicators.volumes(candles)[-20:]).mean())
+    if avg_value_20 < config.UNIVERSE_MIN_DAILY_VALUE:
+        return None
+
     recent_vol_5 = indicators.avg_volume(candles, 5)
     volume_rising = recent_vol_5 > avg_vol_20 * 1.1
 
-    last_close = indicators.closes(candles)[-1]
     swing_high = indicators.prior_swing_high(candles, 20)
     swing_low = indicators.prior_swing_low(candles, 20)
     atr_val = indicators.atr(candles, 14)
@@ -130,13 +143,13 @@ def build_watchlist(token_lookup, history, max_picks=None) -> list[Candidate]:
     getting the actual OHLCV data at all."""
     max_picks = max_picks or config.MAX_PICKS
     candidates = []
-    for symbol in load_universe():
+    symbols = load_universe() if config.UNIVERSE_MODE != "liquid" else list(history)
+    for symbol in symbols:
         candles = history.get(symbol)
         if not candles:
             continue
         cand = evaluate(symbol, candles)
         if cand:
-            cand.token = token_lookup(symbol) or ""
             candidates.append(cand)
 
     candidates.sort(key=lambda c: c.score, reverse=True)
@@ -158,4 +171,16 @@ def build_watchlist(token_lookup, history, max_picks=None) -> list[Candidate]:
             + ", ".join(c.symbol for c in candidates if c.last_close > price_ceiling)
         )
 
-    return affordable[:max_picks]
+    # Look up Angel tokens only for stocks we might actually pick (a wide
+    # universe can produce hundreds of candidates), and skip any Angel can't
+    # quote -- it could never be monitored or confirmed.
+    picks = []
+    for cand in affordable:
+        cand.token = token_lookup(cand.symbol) or ""
+        if not cand.token:
+            print(f"[screener] Skipping {cand.symbol}: no Angel One instrument token")
+            continue
+        picks.append(cand)
+        if len(picks) >= max_picks:
+            break
+    return picks

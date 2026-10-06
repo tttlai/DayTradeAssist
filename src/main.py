@@ -230,14 +230,16 @@ def run_watchlist():
     # scrip-master token lookup, which doesn't require a session either.
     # Falls back to an Angel One login only if NSE fails outright.
     api = AngelAPI()
-    symbols = screener.load_universe()
+    symbols = screener.universe_symbols()
     try:
         history = nse_data.fetch_daily_history(symbols, days=30)
     except nse_data.NSEUnavailable as e:
         print(f"[watchlist] NSE bhavcopy unavailable ({e}) -- falling back to Angel One for daily candles")
         api.login()
         try:
-            history = _fetch_daily_history_via_angel(api, symbols, days=30)
+            # One Angel call per symbol -- can't cover a whole-market
+            # universe, so the fallback always uses the CSV list.
+            history = _fetch_daily_history_via_angel(api, symbols or screener.load_universe(), days=30)
         finally:
             api.logout()
 

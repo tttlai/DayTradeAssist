@@ -49,6 +49,16 @@ SQUARE_OFF_TIME = os.getenv("SQUARE_OFF_TIME", "15:15")
 # disable if it turns out not to help.
 REQUIRE_VWAP_CONFIRMATION = _get_bool("REQUIRE_VWAP_CONFIRMATION", True)
 
+# Which stocks the screener looks at. "csv" = the hand-made list in
+# data/universe.csv (~50 large caps); "liquid" = every NSE EQ stock in the
+# daily bhavcopy that passes the liquidity/price floors below.
+UNIVERSE_MODE = os.getenv("UNIVERSE_MODE", "csv").strip().lower()
+# Minimum 20-day average daily traded value (close x volume), in rupees, and
+# minimum price -- screens out illiquid names and penny stocks whose tick size
+# is a big fraction of price. Apply in both modes (the large caps clear them).
+UNIVERSE_MIN_DAILY_VALUE = _get_float("UNIVERSE_MIN_DAILY_VALUE", 50_000_000)  # Rs 5 crore
+UNIVERSE_MIN_PRICE = _get_float("UNIVERSE_MIN_PRICE", 20)
+
 # Don't enter once price is already more than this many ATRs past the
 # trigger -- a chase, with a stop sitting right back at the broken level.
 # Backtest (realistic fills): entries >0.5 ATR past the trigger lost money

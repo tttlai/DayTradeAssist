@@ -44,17 +44,23 @@ def common_dates(history, threshold=0.9):
     return sorted(d for d, cnt in counts.items() if cnt >= n * threshold)
 
 
-def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=None):
+def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=None, universe=None):
     max_picks = max_picks or config.MAX_PICKS
     stop_multiple = stop_multiple if stop_multiple is not None else strategy.STOP_R_MULTIPLE
     target_multiple = target_multiple if target_multiple is not None else strategy.TARGET_R_MULTIPLE
-    symbols = screener.load_universe()
+    if universe:
+        config.UNIVERSE_MODE = universe
+    symbols = screener.universe_symbols()
 
-    print(f"Fetching {days + LOOKBACK + 10} days of NSE bhavcopy history for {len(symbols)} symbols...")
+    print(f"Fetching {days + LOOKBACK + 10} days of NSE bhavcopy history "
+          f"(universe={config.UNIVERSE_MODE}, "
+          f"{len(symbols) if symbols is not None else 'all EQ'} symbols)...")
     history = nse_data.fetch_daily_history(symbols, days=days + LOOKBACK + 10)
     history = {s: c for s, c in history.items() if c}  # drop symbols with no data at all
 
-    dates = common_dates(history)
+    # Bhavcopy dates are market-wide, but a whole-market universe includes
+    # recent listings that lack older days, so don't demand 90% coverage.
+    dates = common_dates(history, threshold=0.5 if config.UNIVERSE_MODE == "liquid" else 0.9)
     if len(dates) < LOOKBACK + 2:
         print("Not enough overlapping trading history to backtest. Try a smaller --days.")
         return
@@ -262,8 +268,15 @@ def main():
         "--target-multiple", type=float, default=None,
         help=f"Target distance as a multiple of ATR (default: strategy.TARGET_R_MULTIPLE = {strategy.TARGET_R_MULTIPLE})",
     )
+    parser.add_argument(
+        "--universe", choices=["csv", "liquid"], default=None,
+        help="Stock universe to screen (default: UNIVERSE_MODE from config/env)",
+    )
     args = parser.parse_args()
-    run_backtest(days=args.days, stop_multiple=args.stop_multiple, target_multiple=args.target_multiple)
+    run_backtest(
+        days=args.days, stop_multiple=args.stop_multiple, target_multiple=args.target_multiple,
+        universe=args.universe,
+    )
 
 
 if __name__ == "__main__":

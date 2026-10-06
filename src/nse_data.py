@@ -106,16 +106,19 @@ def fetch_bhavcopy_for_date(d: date) -> dict | None:
     return rows
 
 
-def fetch_daily_history(symbols: list[str], days: int) -> dict[str, list]:
+def fetch_daily_history(symbols: list[str] | None, days: int) -> dict[str, list]:
     """Walks backward from today (IST) collecting one bhavcopy per trading
     day until `days` days of history are gathered, skipping weekends and
     holidays automatically (a missing file just means try the previous
     day). Returns {symbol: [candle, candle, ...]}, oldest first -- same
     shape as AngelAPI.get_daily_candles(), so screener.evaluate() doesn't
     care which source produced it.
+
+    symbols=None keeps every EQ stock in the files (used by the "liquid"
+    universe mode); otherwise only the listed symbols.
     """
-    symbol_set = set(symbols)
-    history = {s: [] for s in symbols}
+    symbol_set = set(symbols) if symbols is not None else None
+    history = {s: [] for s in symbols} if symbols is not None else {}
     d = timeutil.now_ist().date()
     collected_days = 0
     max_lookback = days * 3 + 15  # buffer for weekends + holidays
@@ -128,9 +131,13 @@ def fetch_daily_history(symbols: list[str], days: int) -> dict[str, list]:
         if day_rows is None:
             continue
         collected_days += 1
-        for symbol in symbol_set:
-            if symbol in day_rows:
-                history[symbol].append(day_rows[symbol])
+        if symbol_set is None:
+            for symbol, row in day_rows.items():
+                history.setdefault(symbol, []).append(row)
+        else:
+            for symbol in symbol_set:
+                if symbol in day_rows:
+                    history[symbol].append(day_rows[symbol])
         time.sleep(REQUEST_SLEEP)
 
     if collected_days < days:
