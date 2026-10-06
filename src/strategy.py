@@ -16,7 +16,7 @@ Two stages, matching the two scheduled runs described in the README:
 """
 from dataclasses import dataclass, field
 
-from . import config, indicators, risk
+from . import config, indicators, risk, timeutil
 from .screener import Candidate
 
 STOP_R_MULTIPLE = 1.0  # stop-loss = 1x ATR from entry
@@ -118,7 +118,14 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
         return plan
 
     intraday = api.get_intraday_candles(cand.token, interval="FIFTEEN_MINUTE")
+    # The newest candle may still be forming, so len*15 can overstate how
+    # much of the session the volume covers (at 09:20 it would claim 15
+    # minutes for 5 real ones and make the volume bar ~3x too hard). Cap by
+    # the real clock when we're inside market hours.
     minutes_elapsed = max(1, len(intraday) * 15)
+    clock_elapsed = timeutil.minutes_since_open()
+    if clock_elapsed is not None:
+        minutes_elapsed = max(1, min(minutes_elapsed, clock_elapsed))
     today_volume_so_far = sum(c[5] for c in intraday) if intraday else 0
 
     expected_fraction_of_day = min(1.0, minutes_elapsed / MARKET_MINUTES)
@@ -146,7 +153,13 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
         else:
             vwap_confirms = ltp > today_vwap if cand.direction == "LONG" else ltp < today_vwap
 
+    beyond = (ltp - plan.entry_trigger) if cand.direction == "LONG" else (plan.entry_trigger - ltp)
+    chase_atr = round(beyond / cand.atr, 2) if cand.atr else 0.0
+    too_late = config.MAX_CHASE_ATR > 0 and chase_atr > config.MAX_CHASE_ATR
+
     plan.gates = {
+        "chase_atr": chase_atr,
+        "too_late": too_late,
         "ltp": ltp,
         "day_open": intraday[0][1] if intraday else None,
         "price_broke": price_broke_trigger,
@@ -158,7 +171,7 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
         "vwap_ok": vwap_confirms,
     }
 
-    if price_broke_trigger and volume_confirms and vwap_confirms:
+    if price_broke_trigger and volume_confirms and vwap_confirms and not too_late:
         plan.status = "ENTER NOW"
         plan.entry_trigger = round(ltp, 2)
         plan.stop_loss, plan.target = _compute_stop_target(cand.direction, plan.entry_trigger, cand.atr)

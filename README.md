@@ -56,8 +56,22 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    expiry days. Sends you the watchlist with trigger price, stop-loss
    (1 ATR), target (2 ATR), and share quantity sized to your budget/risk
    settings.
-2. **Confirmation — roughly hourly, 09:20 through 14:00 IST** (see
-   `CONFIRM_WINDOWS` in `src/main.py`) — re-checks each still-pending
+2. **Confirmation — 09:20 through 14:15 IST** — a first status snapshot at
+   09:20, then a **continuous monitor**: one Angel login held for the day,
+   a price-only poll about every minute per still-pending stock, and the
+   full volume/VWAP check (at most every 5 minutes per stock) the moment
+   price crosses its trigger, so a breakout is caught within about a minute
+   rather than at the next hourly window. The hourly `CONFIRM_WINDOWS` in
+   `src/main.py` remain as a safety net: when the monitor is healthy they
+   just mark themselves done, and if it isn't they run their own check. The
+   volume pace uses real minutes since the 09:15 open (not 15 minutes per
+   candle, which overstated it while the newest candle was still forming).
+   An entry is also skipped as "too late" when price is already more than
+   `MAX_CHASE_ATR` (default 0.5) ATRs past the trigger — a chase whose stop
+   sits back at the broken level; set `MAX_CHASE_ATR=0` to turn it off.
+   Each check's price/volume/VWAP/too-late results are recorded and shown
+   to the daily eval. The original description of each check follows:
+   re-checks each still-pending
    watchlist stock's live price and today's volume pace. A stock is
    promoted to "ENTER NOW" only if price has actually crossed its trigger,
    today's volume is running hot vs its normal pace, *and* (if

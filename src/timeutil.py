@@ -10,6 +10,17 @@ def now_ist() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None) + IST_OFFSET
 
 
+MARKET_OPEN = (9, 15)
+MARKET_MINUTES = 375  # 09:15 to 15:30
+
+
+def minutes_since_open(now: datetime | None = None) -> float | None:
+    """Minutes since the 09:15 open, or None outside market hours."""
+    now = now or now_ist()
+    mins = (now.hour * 60 + now.minute + now.second / 60) - (MARKET_OPEN[0] * 60 + MARKET_OPEN[1])
+    return mins if 0 < mins <= MARKET_MINUTES else None
+
+
 def candle_time_str(timestamp) -> str:
     """Angel SmartAPI candle timestamps look like '2024-01-15T09:15:00+05:30'."""
     return str(timestamp)[11:16]

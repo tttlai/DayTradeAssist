@@ -49,6 +49,12 @@ SQUARE_OFF_TIME = os.getenv("SQUARE_OFF_TIME", "15:15")
 # disable if it turns out not to help.
 REQUIRE_VWAP_CONFIRMATION = _get_bool("REQUIRE_VWAP_CONFIRMATION", True)
 
+# Don't enter once price is already more than this many ATRs past the
+# trigger -- a chase, with a stop sitting right back at the broken level.
+# Backtest (realistic fills): entries >0.5 ATR past the trigger lost money
+# and excluding them took 120 days from Rs -3.8k to Rs -0.9k. 0 disables.
+MAX_CHASE_ATR = _get_float("MAX_CHASE_ATR", 0.5)
+
 # Daily LLM-powered eval agent (src/eval_agent.py) -- optional. Without an
 # API key it just skips itself (no error), same as Telegram being
 # unconfigured. This is the one real recurring cost in this project: a

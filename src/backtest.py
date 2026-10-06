@@ -122,6 +122,12 @@ def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=No
             opened_through = o >= plan.entry_trigger if cand.direction == "LONG" else o <= plan.entry_trigger
             kind = "already" if already else ("gap" if opened_through else "normal")
             realistic_pnl = trade_pnl
+            # How far past the trigger the earliest real entry (the open) is,
+            # in ATRs -- what the live "too late" guard measures.
+            chase_atr = 0.0
+            if kind != "normal" and cand.atr:
+                beyond = o - cand.trigger_level if cand.direction == "LONG" else cand.trigger_level - o
+                chase_atr = max(beyond, 0.0) / cand.atr
             if kind != "normal":
                 r_stop, r_target = strategy._compute_stop_target(
                     cand.direction, o, cand.atr, stop_multiple, target_multiple
@@ -138,6 +144,7 @@ def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=No
                     "outcome": sim.outcome,
                     "pnl": trade_pnl,
                     "kind": kind,
+                    "chase_atr": chase_atr,
                     "realistic_pnl": realistic_pnl,
                     "approach_pct": eval_agent.approach_pct(
                         cand.direction, cand.last_close, cand.trigger_level, h, l
@@ -229,6 +236,15 @@ def print_gap_report(trades):
     print(_line("   ...same trades, realistic fill at open", gap, "realistic_pnl"))
     realistic_total = sum(t["realistic_pnl"] for t in trades)
     print(f"  Whole backtest with realistic fills             : total Rs {realistic_total:,.0f}")
+    chased = [t for t in trades if t["kind"] != "normal"]
+    print("Entry-distance guard (realistic fills; chase = how many ATRs past the trigger")
+    print("the open already was):")
+    for lo, hi in ((0, 0.25), (0.25, 0.5), (0.5, 1.0), (1.0, 99)):
+        grp = [t for t in chased if lo <= t["chase_atr"] < hi]
+        print(_line(f"chase {lo:g}-{hi:g} ATR" if hi < 99 else f"chase >= {lo:g} ATR", grp, "realistic_pnl"))
+    kept = [t for t in trades if t["kind"] == "normal" or t["chase_atr"] <= 0.5]
+    print(_line("ALL trades, guard 0.5 ATR applied (realistic)", kept, "realistic_pnl"))
+    print(_line("ALL trades, no guard (realistic)", trades, "realistic_pnl"))
     print("Split by day-extreme distance past the trigger (hindsight, not knowable at")
     print("check time; excludes 'already' trades where the distance is undefined):")
     print(_line("approach <= 150% of prior-close->trigger distance", near, "pnl"))

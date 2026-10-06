@@ -85,7 +85,7 @@ def approach_pct(direction, last_close, trigger, day_high, day_low) -> float | N
 
 def gate_block_counts(gate_log, symbol) -> dict:
     """How many of today's confirm checks each gate failed for this stock."""
-    counts = {"price": 0, "volume": 0, "vwap": 0}
+    counts = {"price": 0, "volume": 0, "vwap": 0, "late": 0}
     for g in gate_log or []:
         if g.get("symbol") != symbol:
             continue
@@ -95,6 +95,8 @@ def gate_block_counts(gate_log, symbol) -> dict:
             counts["volume"] += 1
         if not g.get("vwap_ok"):
             counts["vwap"] += 1
+        if g.get("too_late"):
+            counts["late"] += 1
     return counts
 
 
@@ -109,6 +111,7 @@ def format_gate_log(gate_log, symbol) -> str:
             f"{g['window']}: px {'Y' if g.get('price_broke') else 'N'}, "
             f"vol {'?' if ratio is None else f'{ratio}x'} {'ok' if g.get('volume_ok') else 'LOW'}, "
             f"vwap {'ok' if g.get('vwap_ok') else 'WRONG SIDE'}"
+            + (f", TOO LATE ({g.get('chase_atr')} ATR past trigger)" if g.get("too_late") else "")
         )
     return "; ".join(parts) if parts else "no confirm checks recorded"
 
@@ -202,9 +205,9 @@ def build_prompt(candidates, outcomes, confirmed_results, history, gate_log=None
             ", approach% " + ", ".join(
                 f"{w['symbol']} {w['approach_pct']}" for w in h["watchlist"] if w.get("approach_pct") is not None
             )
-            + "; checks failed (px/vol/vwap) " + ", ".join(
+            + "; checks failed (px/vol/vwap/late) " + ", ".join(
                 f"{w['symbol']}{' GAP' if w.get('gapped_through') else ''} "
-                + "/".join(str(w["blocked_by"].get(k, 0)) for k in ("price", "volume", "vwap"))
+                + "/".join(str(w["blocked_by"].get(k, 0)) for k in ("price", "volume", "vwap", "late"))
                 for w in h["watchlist"] if w.get("blocked_by")
             )
             if h.get("watchlist") else ""

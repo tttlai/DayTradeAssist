@@ -54,7 +54,7 @@ import argparse
 import dataclasses
 import json
 import time
-from datetime import time as dtime
+from datetime import time as dtime, timedelta
 
 from . import config, eval_agent, github_pr, health, notify, nse_data, report, screener, strategy, telegram_commands, timeutil, tradesim
 from .angel_api import AngelAPI
@@ -287,6 +287,12 @@ def run_confirm(window_key: str):
         save_full_state(state)
         return
 
+    if not is_first_check and _monitor_is_healthy(timeutil.now_ist()):
+        print(f"[confirm:{window_key}] continuous monitor is healthy and already covering this, marking done")
+        state["confirm_checks_done"] = state.get("confirm_checks_done", []) + [window_key]
+        save_full_state(state)
+        return
+
     api = AngelAPI()
     api.login()
     try:
@@ -330,6 +336,132 @@ def run_confirm(window_key: str):
         save_full_state(state)
     finally:
         api.logout()
+
+
+# --- Continuous trigger monitor -------------------------------------------
+# The six CONFIRM_WINDOWS above are hourly snapshots, so a stock could cross
+# its trigger and sit undetected for up to an hour (and be entered after the
+# move was over). Between the first snapshot and the last window's end, this
+# polls cheaply and runs the full confirmation the moment price crosses.
+# The windows stay as a safety net: if the monitor is healthy, they just mark
+# themselves done; if it isn't, they do their own check exactly as before.
+MONITOR_POLL_SECONDS = 60  # price-only poll; one cheap call per pending stock
+MONITOR_FULL_CHECK_SECONDS = 300  # full volume/VWAP check, per stock, once crossed
+MONITOR_RETRY_SECONDS = 120  # wait after a failed login / dead session
+MONITOR_HEALTHY_SECONDS = 180  # window is skipped if the monitor polled this recently
+MONITOR_END = CONFIRM_WINDOWS[-1][2]
+
+_monitor = {
+    "date": None, "api": None, "last_poll": None, "next_attempt": None,
+    "last_ok": None, "last_full": {}, "last_sig": {},
+}
+
+
+def _monitor_close():
+    api = _monitor["api"]
+    _monitor["api"] = None
+    if api is not None:
+        try:
+            api.logout()
+        except Exception as e:
+            print(f"[monitor] logout raised {e.__class__.__name__}: {e}")
+
+
+def _monitor_is_healthy(now) -> bool:
+    ok = _monitor["last_ok"]
+    return ok is not None and (now - ok).total_seconds() <= MONITOR_HEALTHY_SECONDS
+
+
+def run_monitor():
+    """One monitor tick; called every serve-loop iteration and self-throttles
+    to MONITOR_POLL_SECONDS. Never raises."""
+    try:
+        _run_monitor()
+    except Exception as e:
+        print(f"[monitor] tick raised {e.__class__.__name__}: {e}")
+        _monitor["next_attempt"] = timeutil.now_ist() + timedelta(seconds=MONITOR_RETRY_SECONDS)
+        _monitor_close()
+
+
+def _run_monitor():
+    now = timeutil.now_ist()
+    today = now.strftime("%Y-%m-%d")
+    if _monitor["date"] != today:
+        _monitor_close()
+        _monitor.update(date=today, last_poll=None, next_attempt=None, last_ok=None, last_full={}, last_sig={})
+
+    state = load_full_state()
+    first_key = CONFIRM_WINDOWS[0][0]
+    candidates = [Candidate(**c) for c in state.get("candidates", [])]
+    confirmed = {p["symbol"] for p in state.get("confirmed_plans", [])}
+    pending = [c for c in candidates if c.symbol not in confirmed]
+
+    if (
+        not pending
+        or first_key not in state.get("confirm_checks_done", [])
+        or now.time() > MONITOR_END
+    ):
+        _monitor_close()
+        return
+
+    if _monitor["last_poll"] and (now - _monitor["last_poll"]).total_seconds() < MONITOR_POLL_SECONDS:
+        return
+    if _monitor["next_attempt"] and now < _monitor["next_attempt"]:
+        return
+    _monitor["last_poll"] = now
+
+    api = _monitor["api"]
+    if api is None:
+        api = AngelAPI()
+        api.login()  # raises -> run_monitor() backs off
+        _monitor["api"] = api
+
+    hhmm = now.strftime("%H:%M")
+    new_triggers, gate_entries, prices_seen = [], [], 0
+    for c in pending:
+        try:
+            plan = strategy.build_plan(c, len(candidates))
+            ltp = api.get_ltp(c.symbol, c.token)
+            if ltp is None:
+                continue
+            prices_seen += 1
+            crossed = ltp >= plan.entry_trigger if c.direction == "LONG" else ltp <= plan.entry_trigger
+            if not crossed:
+                continue
+            last_full = _monitor["last_full"].get(c.symbol)
+            if last_full and (now - last_full).total_seconds() < MONITOR_FULL_CHECK_SECONDS:
+                continue
+            _monitor["last_full"][c.symbol] = now
+            plan = strategy.check_confirmation(api, c, plan, len(candidates))
+        except Exception as e:
+            print(f"[monitor] {c.symbol}: raised {e.__class__.__name__}: {e}")
+            continue
+
+        if plan.gates:
+            sig = (plan.gates["price_broke"], plan.gates["volume_ok"], plan.gates["vwap_ok"], plan.gates["too_late"])
+            if plan.status == "ENTER NOW" or sig != _monitor["last_sig"].get(c.symbol):
+                gate_entries.append({"window": hhmm, "symbol": c.symbol, "status": plan.status, **plan.gates})
+            _monitor["last_sig"][c.symbol] = sig
+        if plan.status == "ENTER NOW":
+            plan.entered_at = hhmm
+            new_triggers.append(plan)
+
+    if prices_seen == 0:
+        # Every price lookup failed: the session is probably dead.
+        print("[monitor] no prices returned for any pending stock -- dropping session, will retry")
+        _monitor["next_attempt"] = now + timedelta(seconds=MONITOR_RETRY_SECONDS)
+        _monitor_close()
+        return
+    _monitor["last_ok"] = now
+
+    if gate_entries or new_triggers:
+        state = load_full_state()
+        state["gate_log"] = state.get("gate_log", []) + gate_entries
+        state["confirmed_plans"] = state.get("confirmed_plans", []) + [dataclasses.asdict(p) for p in new_triggers]
+        save_full_state(state)
+    if new_triggers:
+        print(f"[monitor] {hhmm}: new trigger(s): {', '.join(p.symbol for p in new_triggers)}")
+        notify.send_message(report.format_new_triggers(new_triggers, hhmm))
 
 
 def run_summary():
@@ -490,6 +622,7 @@ def run_eval():
 def run_auto():
     """Decide what to do based on current IST time + today's state."""
     handle_commands()
+    run_monitor()
 
     t = timeutil.now_ist().time()
     state = load_full_state()
