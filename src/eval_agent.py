@@ -116,6 +116,41 @@ def format_gate_log(gate_log, symbol) -> str:
     return "; ".join(parts) if parts else "no confirm checks recorded"
 
 
+def attach_entry_details(confirmed_results, confirmed_plans) -> list[dict]:
+    """Copies each confirmed trade's entry-time readings (when it was
+    entered, how far past the trigger it was, volume pace, VWAP side) from
+    its saved plan onto its outcome record, under "entry_info" ("entry" is
+    already the entry price)."""
+    plans = {p.get("symbol"): p for p in confirmed_plans or []}
+    enriched = []
+    for r in confirmed_results:
+        p = plans.get(r.get("symbol")) or {}
+        g = p.get("gates") or {}
+        entry = {
+            "entered_at": p.get("entered_at") or None,
+            "chase_atr": g.get("chase_atr"),
+            "volume_ratio": g.get("volume_ratio"),
+            "vwap_ok": g.get("vwap_ok"),
+        }
+        enriched.append({**r, "entry_info": entry})
+    return enriched
+
+
+def format_entry_details(entry) -> str:
+    if not entry or not any(v is not None for v in entry.values()):
+        return ""
+    parts = []
+    if entry.get("entered_at"):
+        parts.append(f"entered {entry['entered_at']}")
+    if entry.get("chase_atr") is not None:
+        parts.append(f"{entry['chase_atr']} ATR past trigger at entry")
+    if entry.get("volume_ratio") is not None:
+        parts.append(f"volume {entry['volume_ratio']}x pace")
+    if entry.get("vwap_ok") is not None:
+        parts.append("VWAP ok" if entry["vwap_ok"] else "VWAP wrong side")
+    return " | " + ", ".join(parts)
+
+
 def fetch_watchlist_outcomes(api, candidates) -> list[dict]:
     """For every watchlist candidate -- confirmed or not -- fetch today's
     full intraday candles and report what actually happened: did price
@@ -171,6 +206,34 @@ def fetch_watchlist_outcomes(api, candidates) -> list[dict]:
     return outcomes
 
 
+def _history_detail(h) -> str:
+    """Per-day trade and watchlist detail for one history line; each part is
+    omitted when that day's record predates it."""
+    parts = []
+    if h.get("trades"):
+        parts.append(
+            "; trades " + ", ".join(
+                f"{t['symbol']} {t['direction']} {t['outcome']} Rs {t['pnl']:.0f}"
+                + (f" @{t['entered_at']}" if t.get("entered_at") else "")
+                + (f" chase {t['chase_atr']}ATR" if t.get("chase_atr") is not None else "")
+                + (f" vol {t['volume_ratio']}x" if t.get("volume_ratio") is not None else "")
+                for t in h["trades"]
+            )
+        )
+    watchlist = h.get("watchlist") or []
+    approach = [f"{w['symbol']} {w['approach_pct']}" for w in watchlist if w.get("approach_pct") is not None]
+    if approach:
+        parts.append(", approach% " + ", ".join(approach))
+    blocked = [
+        f"{w['symbol']}{' GAP' if w.get('gapped_through') else ''} "
+        + "/".join(str(w["blocked_by"].get(k, 0)) for k in ("price", "volume", "vwap", "late"))
+        for w in watchlist if w.get("blocked_by")
+    ]
+    if blocked:
+        parts.append("; checks failed (px/vol/vwap/late) " + ", ".join(blocked))
+    return "".join(parts)
+
+
 def build_prompt(candidates, outcomes, confirmed_results, history, gate_log=None) -> str:
     today = timeutil.now_ist().strftime("%d %b %Y")
 
@@ -194,24 +257,14 @@ def build_prompt(candidates, outcomes, confirmed_results, history, gate_log=None
 
     confirmed_lines = [
         f"- {r['symbol']} {r['direction']}: entry {r['entry']} -> exit {r['exit']} "
-        f"({r['outcome']}), P&L Rs {r['pnl']:.0f}"
+        f"({r['outcome']}), P&L Rs {r['pnl']:.0f}{format_entry_details(r.get('entry_info'))}"
         for r in confirmed_results
     ] or ["(nothing was confirmed today)"]
 
     history_lines = [
         f"- {h['date']}: {h['watchlist_count']} watchlist, {h['confirmed_count']} confirmed, "
         f"outcomes {h['outcomes']}, P&L Rs {h['total_pnl']:.0f}"
-        + (
-            ", approach% " + ", ".join(
-                f"{w['symbol']} {w['approach_pct']}" for w in h["watchlist"] if w.get("approach_pct") is not None
-            )
-            + "; checks failed (px/vol/vwap/late) " + ", ".join(
-                f"{w['symbol']}{' GAP' if w.get('gapped_through') else ''} "
-                + "/".join(str(w["blocked_by"].get(k, 0)) for k in ("price", "volume", "vwap", "late"))
-                for w in h["watchlist"] if w.get("blocked_by")
-            )
-            if h.get("watchlist") else ""
-        )
+        + _history_detail(h)
         for h in history
     ] or ["(no prior history yet)"]
 

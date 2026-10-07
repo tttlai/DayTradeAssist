@@ -530,7 +530,9 @@ def run_eval():
     project with a real recurring cost."""
     state = load_full_state()
     candidates = [Candidate(**c) for c in state.get("candidates", [])]
-    confirmed_results = state.get("summary_results", [])
+    confirmed_results = eval_agent.attach_entry_details(
+        state.get("summary_results", []), state.get("confirmed_plans", [])
+    )
 
     if not candidates:
         notify.send_message("*Daily Eval*\n\nNo watchlist today, nothing to evaluate.")
@@ -602,6 +604,16 @@ def run_eval():
             "confirmed_count": len(confirmed_results),
             "outcomes": outcome_counts,
             "total_pnl": sum(r["pnl"] for r in confirmed_results),
+            "trades": [
+                {
+                    "symbol": r["symbol"],
+                    "direction": r["direction"],
+                    "outcome": r["outcome"],
+                    "pnl": r["pnl"],
+                    **{k: v for k, v in r["entry_info"].items() if k != "vwap_ok"},
+                }
+                for r in confirmed_results
+            ],
             "watchlist": [
                 {
                     "symbol": o["symbol"],
