@@ -440,7 +440,12 @@ def _run_monitor():
             continue
 
         if plan.gates:
-            sig = (plan.gates["price_broke"], plan.gates["volume_ok"], plan.gates["vwap_ok"], plan.gates["too_late"])
+            sig = (
+                plan.gates["price_broke"], plan.gates["volume_ok"], plan.gates["vwap_ok"],
+                plan.gates["too_late"], plan.gates["no_candles"],
+            )
+            if plan.status == "NO DATA":
+                _monitor["last_full"].pop(c.symbol, None)  # retry next poll, don't wait 5 min
             if plan.status == "ENTER NOW" or sig != _monitor["last_sig"].get(c.symbol):
                 gate_entries.append({"window": hhmm, "symbol": c.symbol, "status": plan.status, **plan.gates})
             _monitor["last_sig"][c.symbol] = sig
@@ -485,11 +490,21 @@ def run_summary():
         for plan in plans:
             try:
                 intraday = api.get_intraday_candles(plan.token, interval="FIFTEEN_MINUTE")
+                if not intraday:
+                    time.sleep(2)  # one retry: an empty reply is usually transient
+                    intraday = api.get_intraday_candles(plan.token, interval="FIFTEEN_MINUTE")
                 relevant = [
                     c
                     for c in intraday
                     if plan.entered_at <= timeutil.candle_time_str(c[0]) <= config.SQUARE_OFF_TIME
                 ]
+                if not relevant:
+                    # Without candles after entry there is no outcome to compute.
+                    # walk_candles() would return exit 0.0, which pnl() turns into
+                    # a made-up profit/loss (a short "exiting at 0" = entry x qty).
+                    print(f"[summary] {plan.symbol}: no candles after entry {plan.entered_at} -- can't compute outcome")
+                    failed_symbols.append(plan.symbol)
+                    continue
                 sim = tradesim.walk_candles(relevant, plan.direction, plan.stop_loss, plan.target)
                 trade_pnl = tradesim.pnl(plan.direction, plan.entry_trigger, sim.exit_price, plan.quantity)
                 results.append((plan, sim, trade_pnl))

@@ -85,9 +85,12 @@ def approach_pct(direction, last_close, trigger, day_high, day_low) -> float | N
 
 def gate_block_counts(gate_log, symbol) -> dict:
     """How many of today's confirm checks each gate failed for this stock."""
-    counts = {"price": 0, "volume": 0, "vwap": 0, "late": 0}
+    counts = {"price": 0, "volume": 0, "vwap": 0, "late": 0, "nodata": 0}
     for g in gate_log or []:
         if g.get("symbol") != symbol:
+            continue
+        if g.get("no_candles"):
+            counts["nodata"] += 1  # a failed candle fetch, not a volume/VWAP verdict
             continue
         if not g.get("price_broke"):
             counts["price"] += 1
@@ -107,6 +110,9 @@ def format_gate_log(gate_log, symbol) -> str:
         if g.get("symbol") != symbol:
             continue
         ratio = g.get("volume_ratio")
+        if g.get("no_candles"):
+            parts.append(f"{g['window']}: NO CANDLE DATA (fetch failed -- says nothing about volume/VWAP)")
+            continue
         parts.append(
             f"{g['window']}: px {'Y' if g.get('price_broke') else 'N'}, "
             f"vol {'?' if ratio is None else f'{ratio}x'} {'ok' if g.get('volume_ok') else 'LOW'}, "
@@ -227,6 +233,7 @@ def _history_detail(h) -> str:
     blocked = [
         f"{w['symbol']}{' GAP' if w.get('gapped_through') else ''} "
         + "/".join(str(w["blocked_by"].get(k, 0)) for k in ("price", "volume", "vwap", "late"))
+        + (f" nodata {w['blocked_by']['nodata']}" if w["blocked_by"].get("nodata") else "")
         for w in watchlist if w.get("blocked_by")
     ]
     if blocked:

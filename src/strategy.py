@@ -122,6 +122,21 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
     # much of the session the volume covers (at 09:20 it would claim 15
     # minutes for 5 real ones and make the volume bar ~3x too hard). Cap by
     # the real clock when we're inside market hours.
+    if not intraday:
+        # An empty candle list means the fetch failed or returned nothing --
+        # not "volume is 0" or "VWAP is on the wrong side". Report it as the
+        # data failure it is, so it neither blocks as a fake low-volume
+        # reading nor gets mistaken for one in the gate log.
+        print(f"[confirm] {cand.symbol}: no intraday candles returned -- treating as NO DATA")
+        broke = ltp >= plan.entry_trigger if cand.direction == "LONG" else ltp <= plan.entry_trigger
+        plan.gates = {
+            "ltp": ltp, "day_open": None, "price_broke": broke, "volume_ratio": None,
+            "volume_ok": False, "vwap": None, "vwap_ok": False,
+            "chase_atr": 0.0, "too_late": False, "no_candles": True,
+        }
+        plan.status = "NO DATA"
+        return plan
+
     minutes_elapsed = max(1, len(intraday) * 15)
     clock_elapsed = timeutil.minutes_since_open()
     if clock_elapsed is not None:
@@ -160,6 +175,7 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
     plan.gates = {
         "chase_atr": chase_atr,
         "too_late": too_late,
+        "no_candles": False,
         "ltp": ltp,
         "day_open": intraday[0][1] if intraday else None,
         "price_broke": price_broke_trigger,

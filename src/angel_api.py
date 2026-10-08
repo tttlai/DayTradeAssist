@@ -109,8 +109,9 @@ class AngelAPI:
             print(f"[angel_api] get_daily_candles({token}) raised {e.__class__.__name__}: {e}")
             return []
         if not result.get("status"):
+            print(f"[angel_api] get_daily_candles({token}) status false: {result.get('message')} ({result.get('errorcode')})")
             return []
-        return result.get("data", [])[-days:]
+        return (result.get("data") or [])[-days:]
 
     def get_intraday_candles(self, token: str, interval="FIFTEEN_MINUTE"):
         """Today's (IST) intraday candles, used for confirmation + summary.
@@ -131,5 +132,6 @@ class AngelAPI:
             print(f"[angel_api] get_intraday_candles({token}) raised {e.__class__.__name__}: {e}")
             return []
         if not result.get("status"):
+            print(f"[angel_api] get_intraday_candles({token}) status false: {result.get('message')} ({result.get('errorcode')})")
             return []
-        return result.get("data", [])
+        return result.get("data") or []
