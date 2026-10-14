@@ -56,15 +56,15 @@ import json
 import time
 from datetime import time as dtime, timedelta
 
-from . import config, eval_agent, github_pr, health, notify, nse_data, report, screener, strategy, telegram_commands, timeutil, tradesim
+from . import config, eval_agent, github_pr, health, notify, nse_data, report, screener, store, strategy, telegram_commands, timeutil, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
-STATE_FILE = config.ROOT_DIR / "data" / "today_state.json"
-TELEGRAM_STATE_FILE = config.ROOT_DIR / "data" / "telegram_state.json"
+STATE_FILE = config.PERSIST_DIR / "today_state.json"
+TELEGRAM_STATE_FILE = config.PERSIST_DIR / "telegram_state.json"
 # Persists across days (not wiped by the daily reset) -- a suggestion from
 # the eval agent waits here until you reply YES/NO, however long that takes.
-PENDING_SUGGESTION_FILE = config.ROOT_DIR / "data" / "pending_suggestion.json"
+PENDING_SUGGESTION_FILE = config.PERSIST_DIR / "pending_suggestion.json"
 
 WATCHLIST_WINDOW = (dtime(8, 40), dtime(9, 5))
 SUMMARY_WINDOW = (dtime(15, 35), dtime(16, 0))
@@ -186,6 +186,8 @@ def handle_commands():
             github_pr.close_pr(pending["pr_number"])
             notify.send_message(f"Dismissed — *{pending['param']}* suggestion rejected, PR closed.")
             clear_pending_suggestion()
+        elif cmd == "/stats":
+            notify.send_message(store.trade_stats(store.read_records("trades.jsonl")))
         elif cmd in ("/health", "/status"):
             print("[health] /health command received, running check")
             notify.send_message(health.run_health_check())
@@ -195,7 +197,7 @@ def handle_commands():
                 "Angel One + Railway status."
             )
         else:
-            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health")
+            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats")
 
     if new_last_id != last_id:
         _save_last_update_id(new_last_id)
@@ -520,6 +522,40 @@ def run_summary():
         # Persisted (not just the Telegram text) so run_eval() can reuse these
         # computed outcomes without re-fetching intraday data / re-running
         # tradesim for the same confirmed trades.
+        trade_date = state.get("date") or _today_key()
+        for plan, sim, trade_pnl in results:
+            store.append_record(
+                "trades.jsonl",
+                {
+                    "date": trade_date,
+                    "symbol": plan.symbol,
+                    "direction": plan.direction,
+                    "entered_at": plan.entered_at,
+                    "entry": plan.entry_trigger,
+                    "stop_loss": plan.stop_loss,
+                    "target": plan.target,
+                    "quantity": plan.quantity,
+                    "exit": sim.exit_price,
+                    "outcome": sim.outcome,
+                    "pnl": trade_pnl,
+                    "circuit_history": plan.circuit_history,
+                    "gates_at_entry": plan.gates,
+                },
+                key=("date", "symbol"),
+            )
+        for plan in plans:
+            if plan.symbol in failed_symbols:
+                store.append_record(
+                    "trades.jsonl",
+                    {
+                        "date": trade_date, "symbol": plan.symbol, "direction": plan.direction,
+                        "entered_at": plan.entered_at, "entry": plan.entry_trigger,
+                        "stop_loss": plan.stop_loss, "target": plan.target, "quantity": plan.quantity,
+                        "exit": None, "outcome": "UNKNOWN", "pnl": None,
+                        "circuit_history": plan.circuit_history, "gates_at_entry": plan.gates,
+                    },
+                    key=("date", "symbol"),
+                )
         state["summary_results"] = [
             {
                 "symbol": plan.symbol,
@@ -644,6 +680,26 @@ def run_eval():
         }
     )
 
+    store.append_record(
+        "days.jsonl",
+        {
+            "date": state.get("date") or _today_key(),
+            "settings": {
+                "budget": config.MAX_BUDGET, "max_picks": config.MAX_PICKS,
+                "max_chase_atr": config.MAX_CHASE_ATR, "universe": config.UNIVERSE_MODE,
+                "volume_multiple": strategy.VOLUME_CONFIRM_MULTIPLE,
+                "stop_r": strategy.STOP_R_MULTIPLE, "target_r": strategy.TARGET_R_MULTIPLE,
+                "require_vwap": config.REQUIRE_VWAP_CONFIRMATION,
+            },
+            "watchlist": [dataclasses.asdict(c) for c in candidates],
+            "outcomes": outcomes,
+            "gate_log": gate_log,
+            "confirmed": [r["symbol"] for r in confirmed_results],
+            "total_pnl": sum(r["pnl"] for r in confirmed_results),
+        },
+        key=("date",),
+    )
+
     state["sent_eval"] = True
     save_full_state(state)
 
@@ -748,6 +804,7 @@ def run_serve_loop():
     clock every LOOP_INTERVAL_SECONDS; a crash in one iteration is logged
     and swallowed so the loop itself never dies from it."""
     print(f"[serve] Starting persistent loop, checking every {LOOP_INTERVAL_SECONDS}s")
+    print(f"[serve] Persistent data dir: {config.PERSIST_DIR}")
     while True:
         try:
             run_auto()

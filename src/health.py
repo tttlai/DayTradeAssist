@@ -8,6 +8,8 @@
 Getting a reply at all is itself proof the Railway service executed
 this run successfully.
 """
+import os
+
 import requests
 
 from . import config
@@ -38,6 +40,22 @@ def check_angel_login() -> tuple[bool, str]:
         return False, f"login failed ({e.__class__.__name__}: {e})"
 
 
+def storage_status() -> str:
+    """Is history/trade data going to a persistent location? On Railway that
+    means a Volume (RAILWAY_VOLUME_MOUNT_PATH); otherwise it is wiped on every
+    redeploy."""
+    if os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or os.getenv("PERSIST_DIR"):
+        try:
+            config.PERSIST_DIR.mkdir(parents=True, exist_ok=True)
+            probe = config.PERSIST_DIR / ".write_test"
+            probe.write_text("ok")
+            probe.unlink()
+            return f"✅ Storage persistent and writable — {config.PERSIST_DIR}"
+        except OSError as e:
+            return f"❌ Storage {config.PERSIST_DIR} is not writable — {e.__class__.__name__}"
+    return "⚠️ No persistent volume — history and trade logs are lost on every redeploy"
+
+
 def run_health_check() -> str:
     reachable, reach_detail = check_angel_reachable()
     login_ok, login_detail = check_angel_login()
@@ -46,4 +64,5 @@ def run_health_check() -> str:
     lines.append(f"{'✅' if reachable else '❌'} Angel One reachable — {reach_detail}")
     lines.append(f"{'✅' if login_ok else '❌'} Angel One login — {login_detail}")
     lines.append("✅ Railway service is up — this reply is proof the current run executed")
+    lines.append(storage_status())
     return "\n".join(lines)

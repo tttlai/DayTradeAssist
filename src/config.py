@@ -7,6 +7,12 @@ load_dotenv()
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
+# Where state that must survive a redeploy/restart is kept (daily state, eval
+# history, the trade logs). On Railway, attach a Volume: Railway sets
+# RAILWAY_VOLUME_MOUNT_PATH to its mount path and this picks it up. Locally it
+# falls back to data/. Override with PERSIST_DIR.
+PERSIST_DIR = Path(os.getenv("PERSIST_DIR") or os.getenv("RAILWAY_VOLUME_MOUNT_PATH") or (ROOT_DIR / "data"))
+
 
 def _get_float(name: str, default: float) -> float:
     val = os.getenv(name)

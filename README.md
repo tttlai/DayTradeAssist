@@ -462,3 +462,25 @@ data/
   pending_suggestion.json  The one eval-agent tuning suggestion awaiting
                         your YES/NO, if any; never resets, gitignored
 ```
+
+### Persistent storage (Railway Volume)
+
+Without a Volume, everything under `data/` is wiped on every redeploy or
+restart -- including the eval's rolling history. Attach a Railway Volume to
+the service (mount path `/app/data/store`, **not** `/app/data`, which would
+hide `universe.csv`). Railway then sets `RAILWAY_VOLUME_MOUNT_PATH`, and the
+daily state, Telegram cursor, eval history, pending suggestion and two
+permanent logs are all kept there (override with `PERSIST_DIR`; locally it
+falls back to `data/`). Send `/health` to confirm: it reports whether storage
+is persistent and writable.
+
+The permanent logs are append-only, one JSON object per line, never pruned:
+- `trades.jsonl` -- one record per confirmed trade: entry time/price, stop,
+  target, quantity, exit price, outcome, P&L, and the confirmation readings at
+  entry (`UNKNOWN` outcome when the data failed).
+- `days.jsonl` -- one record per day: the settings in force, the watchlist,
+  each stock's day open/high/low/close and whether it crossed, and the full
+  check-by-check gate log.
+
+Send `/stats` in Telegram for a summary of `trades.jsonl` (trade count, win
+rate, total P&L, outcome mix, last 8 trades).

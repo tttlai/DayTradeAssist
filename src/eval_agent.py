@@ -45,7 +45,7 @@ from .github_pr import TUNABLE_PARAMS
 
 SUGGESTION_MARKER = "---SUGGESTION---"
 
-EVAL_HISTORY_FILE = config.ROOT_DIR / "data" / "eval_history.json"
+EVAL_HISTORY_FILE = config.PERSIST_DIR / "eval_history.json"
 MAX_HISTORY_DAYS = 14
 # Headroom for models that emit a thinking block before the answer (thinking
 # counts toward max_tokens); the prompt itself asks for a short reply, which
