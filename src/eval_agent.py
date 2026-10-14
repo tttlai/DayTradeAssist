@@ -94,12 +94,14 @@ def gate_block_counts(gate_log, symbol) -> dict:
             continue
         if not g.get("price_broke"):
             counts["price"] += 1
+        if g.get("too_late"):
+            counts["late"] += 1
+        if g.get("volume_checked") is False:
+            continue  # rejected on price alone; volume/VWAP never looked at
         if not g.get("volume_ok"):
             counts["volume"] += 1
         if not g.get("vwap_ok"):
             counts["vwap"] += 1
-        if g.get("too_late"):
-            counts["late"] += 1
     return counts
 
 
@@ -111,7 +113,14 @@ def format_gate_log(gate_log, symbol) -> str:
             continue
         ratio = g.get("volume_ratio")
         if g.get("no_candles"):
-            parts.append(f"{g['window']}: NO CANDLE DATA (fetch failed -- says nothing about volume/VWAP)")
+            why = f": {g['error']}" if g.get("error") else ""
+            parts.append(f"{g['window']}: NO CANDLE DATA (fetch failed{why} -- says nothing about volume/VWAP)")
+            continue
+        if g.get("volume_checked") is False:
+            parts.append(
+                f"{g['window']}: px Y, TOO LATE ({g.get('chase_atr')} ATR past trigger) -- "
+                "rejected on price alone, volume/VWAP not checked"
+            )
             continue
         parts.append(
             f"{g['window']}: px {'Y' if g.get('price_broke') else 'N'}, "
@@ -292,6 +301,20 @@ confirmed -- the only subset actually "traded"):
 
 RECENT HISTORY (last {len(history)} days, oldest first):
 {chr(10).join(history_lines)}
+
+HOW THE TOOL ALREADY WORKS -- do not suggest things that exist or were already tested:
+- After a 09:20 snapshot, a monitor polls prices about every minute and runs the
+  full volume/VWAP check (at most every 5 min per stock) once price crosses its
+  trigger, so confirmation timing is NOT limited by a coarse check cadence.
+- Entries more than 0.5 ATR past the trigger are rejected as TOO LATE on purpose.
+  Backtests with realistic fills (entry at the open, not at the trigger) showed
+  entries >1 ATR past the trigger lose money (28 trades, avg Rs -74 each), and the
+  headline backtest profit was inflated by assuming fills at the trigger. A gap
+  day being rejected is expected behaviour, not a bug, unless you have clear
+  multi-day evidence otherwise.
+- "NO CANDLE DATA" means Angel returned nothing; it says nothing about volume/VWAP.
+- Overall the backtest found no clear edge, so treat samples of a few trades as noise.
+- You are NOT given exit times, so do not claim how quickly a trade was stopped.
 
 Please answer concretely, grounded in the numbers above, not generic trading
 platitudes:

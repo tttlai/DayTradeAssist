@@ -40,6 +40,7 @@ class TradePlan:
     # What each confirmation gate saw on the last check -- lets the eval (and
     # you) see WHY a stock was skipped, not just that it was.
     gates: dict = field(default_factory=dict)
+    error: str = ""  # why a "NO DATA" check failed (Angel's own message), if known
 
 
 def _compute_stop_target(
@@ -114,7 +115,23 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
     ltp = api.get_ltp(cand.symbol, cand.token)
     if ltp is None:
         print(f"[confirm] {cand.symbol}: get_ltp returned None -- Angel One API/token issue?")
+        plan.error = getattr(api, "last_error", None) or "no reason given"
         plan.status = "NO DATA"
+        return plan
+
+    # Too late is decided from the price alone, so check it before spending a
+    # candle fetch (a gapped-through stock would otherwise trigger a full
+    # check, and a chance for a failed fetch, every few minutes all day).
+    beyond = (ltp - plan.entry_trigger) if cand.direction == "LONG" else (plan.entry_trigger - ltp)
+    chase_atr = round(beyond / cand.atr, 2) if cand.atr else 0.0
+    too_late = config.MAX_CHASE_ATR > 0 and chase_atr > config.MAX_CHASE_ATR
+    if too_late:
+        plan.gates = {
+            "ltp": ltp, "day_open": None, "price_broke": True, "volume_ratio": None,
+            "volume_ok": False, "vwap": None, "vwap_ok": False,
+            "chase_atr": chase_atr, "too_late": True, "no_candles": False, "volume_checked": False,
+        }
+        plan.status = "NO TRIGGER - SKIP"
         return plan
 
     intraday = api.get_intraday_candles(cand.token, interval="FIFTEEN_MINUTE")
@@ -132,7 +149,8 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
         plan.gates = {
             "ltp": ltp, "day_open": None, "price_broke": broke, "volume_ratio": None,
             "volume_ok": False, "vwap": None, "vwap_ok": False,
-            "chase_atr": 0.0, "too_late": False, "no_candles": True,
+            "chase_atr": 0.0, "too_late": False, "no_candles": True, "volume_checked": False,
+            "error": getattr(api, "last_error", None),
         }
         plan.status = "NO DATA"
         return plan
@@ -168,14 +186,11 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
         else:
             vwap_confirms = ltp > today_vwap if cand.direction == "LONG" else ltp < today_vwap
 
-    beyond = (ltp - plan.entry_trigger) if cand.direction == "LONG" else (plan.entry_trigger - ltp)
-    chase_atr = round(beyond / cand.atr, 2) if cand.atr else 0.0
-    too_late = config.MAX_CHASE_ATR > 0 and chase_atr > config.MAX_CHASE_ATR
-
     plan.gates = {
         "chase_atr": chase_atr,
         "too_late": too_late,
         "no_candles": False,
+        "volume_checked": True,
         "ltp": ltp,
         "day_open": intraday[0][1] if intraday else None,
         "price_broke": price_broke_trigger,

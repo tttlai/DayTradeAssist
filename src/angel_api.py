@@ -20,6 +20,7 @@ class AngelAPI:
     def __init__(self):
         self._client = None
         self._scrip_master = None
+        self.last_error: str | None = None  # why the most recent data call failed
 
     def login(self):
         totp = pyotp.TOTP(config.ANGEL_TOTP_SECRET).now()
@@ -81,12 +82,15 @@ class AngelAPI:
         return None
 
     def get_ltp(self, symbol: str, token: str) -> float | None:
+        self.last_error = None
         try:
             data = self._client.ltpData("NSE", f"{symbol}-EQ", token)
             if data.get("status"):
                 return float(data["data"]["ltp"])
-        except Exception:
-            return None
+            self.last_error = f"{data.get('message')} ({data.get('errorcode')})"
+        except Exception as e:
+            self.last_error = f"{e.__class__.__name__}: {str(e)[:120]}"
+        print(f"[angel_api] get_ltp({symbol}) failed: {self.last_error}")
         return None
 
     def get_daily_candles(self, token: str, days: int = 40):
@@ -103,13 +107,16 @@ class AngelAPI:
             "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
             "todate": to_date.strftime("%Y-%m-%d %H:%M"),
         }
+        self.last_error = None
         try:
             result = self._client.getCandleData(params)
         except Exception as e:
+            self.last_error = f"{e.__class__.__name__}: {str(e)[:120]}"
             print(f"[angel_api] get_daily_candles({token}) raised {e.__class__.__name__}: {e}")
             return []
         if not result.get("status"):
-            print(f"[angel_api] get_daily_candles({token}) status false: {result.get('message')} ({result.get('errorcode')})")
+            self.last_error = f"{result.get('message')} ({result.get('errorcode')})"
+            print(f"[angel_api] get_daily_candles({token}) status false: {self.last_error}")
             return []
         return (result.get("data") or [])[-days:]
 
@@ -126,12 +133,18 @@ class AngelAPI:
             "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
             "todate": today.strftime("%Y-%m-%d %H:%M"),
         }
+        self.last_error = None
         try:
             result = self._client.getCandleData(params)
         except Exception as e:
+            self.last_error = f"{e.__class__.__name__}: {str(e)[:120]}"
             print(f"[angel_api] get_intraday_candles({token}) raised {e.__class__.__name__}: {e}")
             return []
         if not result.get("status"):
-            print(f"[angel_api] get_intraday_candles({token}) status false: {result.get('message')} ({result.get('errorcode')})")
+            self.last_error = f"{result.get('message')} ({result.get('errorcode')})"
+            print(f"[angel_api] get_intraday_candles({token}) status false: {self.last_error}")
             return []
-        return result.get("data") or []
+        data = result.get("data") or []
+        if not data:
+            self.last_error = "Angel returned an empty candle list"
+        return data

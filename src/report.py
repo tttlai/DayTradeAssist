@@ -59,7 +59,12 @@ def format_confirmation(plans) -> str:
     # API/token problem worth investigating), not just a quiet market day.
     if no_data:
         names = ", ".join(p.symbol for p in no_data)
-        lines.append(f"⚠️ *Could not fetch live price for: {names}* — check Angel One connectivity.")
+        lines.append(f"⚠️ *Could not fetch live data for: {names}* — check Angel One connectivity.")
+        for p in no_data:
+            reason = p.error or (p.gates or {}).get("error")
+            if reason:
+                reason = str(reason).replace("_", " ").replace("*", "").replace("`", "")
+                lines.append(f"  {p.symbol}: {reason}")
         lines.append("")
 
     if actionable:

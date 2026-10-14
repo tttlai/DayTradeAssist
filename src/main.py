@@ -455,7 +455,7 @@ def _run_monitor():
 
     if prices_seen == 0:
         # Every price lookup failed: the session is probably dead.
-        print("[monitor] no prices returned for any pending stock -- dropping session, will retry")
+        print(f"[monitor] no prices returned for any pending stock ({getattr(api, 'last_error', None)}) -- dropping session, will retry")
         _monitor["next_attempt"] = now + timedelta(seconds=MONITOR_RETRY_SECONDS)
         _monitor_close()
         return
