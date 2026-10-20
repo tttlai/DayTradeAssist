@@ -97,7 +97,7 @@ def build_plan(
 VOLUME_CONFIRM_MULTIPLE = 1.2  # today's pace must beat this x the 20-day average pace
 
 
-def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) -> TradePlan:
+def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int, snap=None) -> TradePlan:
     """Intraday re-check: did price actually cross the trigger with volume
     (and, if enabled, on the right side of VWAP)?
 
@@ -111,8 +111,12 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
     longer bracket the real entry sensibly -- confirmed in production:
     a SHORT whose price had already fallen past where the target was
     computed, relative to the stale trigger, left a target sitting
-    *above* the real entry instead of below it."""
-    ltp = api.get_ltp(cand.symbol, cand.token)
+    *above* the real entry instead of below it.
+
+    snap: an optional live stream Snapshot (src/stream.py). When given, price,
+    cumulative volume, VWAP and the day's open come from it and no REST call
+    is made at all (api may be None); otherwise they are fetched over REST."""
+    ltp = snap.ltp if snap is not None else api.get_ltp(cand.symbol, cand.token)
     if ltp is None:
         print(f"[confirm] {cand.symbol}: get_ltp returned None -- Angel One API/token issue?")
         plan.error = getattr(api, "last_error", None) or "no reason given"
@@ -130,36 +134,52 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
             "ltp": ltp, "day_open": None, "price_broke": True, "volume_ratio": None,
             "volume_ok": False, "vwap": None, "vwap_ok": False,
             "chase_atr": chase_atr, "too_late": True, "no_candles": False, "volume_checked": False,
+            "source": "stream" if snap is not None else "rest",
         }
         plan.status = "NO TRIGGER - SKIP"
         return plan
 
-    intraday = api.get_intraday_candles(cand.token, interval="FIFTEEN_MINUTE")
-    # The newest candle may still be forming, so len*15 can overstate how
-    # much of the session the volume covers (at 09:20 it would claim 15
-    # minutes for 5 real ones and make the volume bar ~3x too hard). Cap by
-    # the real clock when we're inside market hours.
-    if not intraday:
-        # An empty candle list means the fetch failed or returned nothing --
-        # not "volume is 0" or "VWAP is on the wrong side". Report it as the
+    clock_elapsed = timeutil.minutes_since_open()
+    if snap is not None:
+        intraday = None
+        source = "stream"
+        have_data = snap.volume > 0
+        data_error = "stream reported zero volume"
+        today_volume_so_far = snap.volume
+        # Cumulative volume is exact, so the only question is how much of the
+        # session has elapsed; outside market hours assume a full day.
+        minutes_elapsed = max(1, clock_elapsed if clock_elapsed is not None else MARKET_MINUTES)
+        day_open = snap.day_open
+    else:
+        intraday = api.get_intraday_candles(cand.token, interval="FIFTEEN_MINUTE")
+        source = "rest"
+        have_data = bool(intraday)
+        data_error = getattr(api, "last_error", None)
+        # The newest candle may still be forming, so len*15 can overstate how
+        # much of the session the volume covers (at 09:20 it would claim 15
+        # minutes for 5 real ones and make the volume bar ~3x too hard). Cap
+        # by the real clock when we're inside market hours.
+        minutes_elapsed = max(1, len(intraday) * 15)
+        if clock_elapsed is not None:
+            minutes_elapsed = max(1, min(minutes_elapsed, clock_elapsed))
+        today_volume_so_far = sum(c[5] for c in intraday) if intraday else 0
+        day_open = intraday[0][1] if intraday else None
+
+    if not have_data:
+        # No candles / zero volume means the fetch failed or returned nothing
+        # -- not "volume is 0" or "VWAP is on the wrong side". Report it as the
         # data failure it is, so it neither blocks as a fake low-volume
         # reading nor gets mistaken for one in the gate log.
-        print(f"[confirm] {cand.symbol}: no intraday candles returned -- treating as NO DATA")
+        print(f"[confirm] {cand.symbol}: no intraday data ({source}) -- treating as NO DATA")
         broke = ltp >= plan.entry_trigger if cand.direction == "LONG" else ltp <= plan.entry_trigger
         plan.gates = {
             "ltp": ltp, "day_open": None, "price_broke": broke, "volume_ratio": None,
             "volume_ok": False, "vwap": None, "vwap_ok": False,
             "chase_atr": 0.0, "too_late": False, "no_candles": True, "volume_checked": False,
-            "error": getattr(api, "last_error", None),
+            "error": data_error, "source": source,
         }
         plan.status = "NO DATA"
         return plan
-
-    minutes_elapsed = max(1, len(intraday) * 15)
-    clock_elapsed = timeutil.minutes_since_open()
-    if clock_elapsed is not None:
-        minutes_elapsed = max(1, min(minutes_elapsed, clock_elapsed))
-    today_volume_so_far = sum(c[5] for c in intraday) if intraday else 0
 
     expected_fraction_of_day = min(1.0, minutes_elapsed / MARKET_MINUTES)
     expected_volume_by_now = cand.avg_volume_20 * expected_fraction_of_day
@@ -180,7 +200,7 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
     vwap_confirms = True
     today_vwap = None
     if config.REQUIRE_VWAP_CONFIRMATION:
-        today_vwap = indicators.vwap(intraday)
+        today_vwap = snap.vwap if snap is not None else indicators.vwap(intraday)
         if today_vwap is None:
             vwap_confirms = False
         else:
@@ -192,7 +212,8 @@ def check_confirmation(api, cand: Candidate, plan: TradePlan, num_picks: int) ->
         "no_candles": False,
         "volume_checked": True,
         "ltp": ltp,
-        "day_open": intraday[0][1] if intraday else None,
+        "day_open": day_open,
+        "source": source,
         "price_broke": price_broke_trigger,
         "volume_ratio": (
             round(today_volume_so_far / expected_volume_by_now, 2) if expected_volume_by_now > 0 else None

@@ -153,6 +153,34 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    there's no risk of accidentally triggering one through casual chat
    with the bot.
 
+### Live tick stream (WebSocket)
+
+Instead of repeatedly polling Angel's REST API, the tool holds one
+WebSocket open (`src/stream.py`, Angel's SmartWebSocketV2, read-only) from
+the 09:20 snapshot until 15:31 and subscribes to the day's watchlist. Each
+packet carries the last price, the **exchange's own running VWAP**,
+cumulative day volume and the day's open/high/low, so the confirmation check
+needs no candle fetches at all: a breakout is seen within a couple of seconds
+(the main loop wakes the instant a watched stock crosses its trigger) instead
+of at the next poll, with no rate limit and no empty-candle failures.
+
+- **REST is the automatic fallback.** If the stream is down, stale (no ticks
+  for 90s) or has no data for a stock yet, the monitor polls REST exactly as
+  before, and switches back when the stream recovers.
+- **Sanity guard.** The first streamed price per stock must be within 25% of
+  its prior close, otherwise (wrong units/token) the stream is disabled for the
+  day, you get a Telegram note, and REST takes over.
+- **Visibility.** You get one Telegram note per day when the stream first
+  delivers data, or if it hasn't within 3 minutes (with the reason).
+- **One login.** The stream, the REST fallback and the fallback confirm
+  windows share a single Angel login, which is released after the close.
+- **Candle recording.** Each closed minute is appended to `candles_1m.jsonl`
+  on the Volume (`date, symbol, t, o, h, l, c, v, partial`) for the watchlist
+  stocks. That is real intraday history to backtest against later; the free
+  NSE files only have daily bars. A candle is `partial` if the stream joined
+  mid-minute (its volume undercounts).
+- Turn it off with `STREAM_ENABLED=false`.
+
 ### Market holidays and Angel rate limits
 
 - **Holidays.** Weekends are skipped automatically. Weekday exchange holidays

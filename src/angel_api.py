@@ -45,6 +45,18 @@ class AngelAPI:
             raise RuntimeError(f"Angel One login failed: {session}")
         return session
 
+    @property
+    def auth_token(self) -> str | None:
+        """JWT in the "Bearer ..." form the WebSocket expects."""
+        token = getattr(self._client, "access_token", None)
+        if not token:
+            return None
+        return token if token.startswith("Bearer ") else f"Bearer {token}"
+
+    @property
+    def feed_token(self) -> str | None:
+        return self._client.getfeedToken() if self._client else None
+
     def logout(self):
         if self._client:
             try:

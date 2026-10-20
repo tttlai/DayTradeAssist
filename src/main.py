@@ -56,7 +56,7 @@ import json
 import time
 from datetime import time as dtime, timedelta
 
-from . import config, eval_agent, github_pr, health, notify, nse_data, report, screener, store, strategy, telegram_commands, timeutil, tradesim
+from . import config, eval_agent, github_pr, health, notify, nse_data, report, screener, store, stream, strategy, telegram_commands, timeutil, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
@@ -298,8 +298,13 @@ def run_confirm(window_key: str):
         save_full_state(state)
         return
 
-    api = AngelAPI()
-    api.login()
+    # A later window only runs its own check when the monitor isn't healthy;
+    # reuse the shared login if there is one (logging out would also kill the
+    # live stream that depends on it).
+    shared = None if is_first_check else _monitor["api"]
+    api = shared or AngelAPI()
+    if shared is None:
+        api.login()
     try:
         plans = []
         new_triggers = []
@@ -340,29 +345,53 @@ def run_confirm(window_key: str):
         state["confirm_checks_done"] = state.get("confirm_checks_done", []) + [window_key]
         save_full_state(state)
     finally:
-        api.logout()
+        if shared is None:
+            api.logout()
 
 
 # --- Continuous trigger monitor -------------------------------------------
 # The six CONFIRM_WINDOWS above are hourly snapshots, so a stock could cross
 # its trigger and sit undetected for up to an hour (and be entered after the
 # move was over). Between the first snapshot and the last window's end, this
-# polls cheaply and runs the full confirmation the moment price crosses.
-# The windows stay as a safety net: if the monitor is healthy, they just mark
-# themselves done; if it isn't, they do their own check exactly as before.
-MONITOR_POLL_SECONDS = 60  # price-only poll; one cheap call per pending stock
-MONITOR_FULL_CHECK_SECONDS = 300  # full volume/VWAP check, per stock, once crossed
+# watches continuously and runs the full confirmation the moment price crosses.
+#
+# Preferred source is the live WebSocket stream (src/stream.py): free to read,
+# no rate limit, exact VWAP/volume. If the stream is off, down or stale, the
+# monitor transparently falls back to polling the REST API. The hourly windows
+# stay as a last safety net: if the monitor is healthy they just mark
+# themselves done; if it isn't they do their own check exactly as before.
+MONITOR_POLL_SECONDS = 60  # REST fallback: price-only poll, one call per pending stock
+MONITOR_FULL_CHECK_SECONDS = 300  # REST fallback: full check per stock once crossed
+MONITOR_STREAM_POLL_SECONDS = 2  # reading the stream is free, so look often
+MONITOR_STREAM_FULL_CHECK_SECONDS = 10  # full check is also free from a snapshot
 MONITOR_RETRY_SECONDS = 120  # wait after a failed login / dead session
 MONITOR_HEALTHY_SECONDS = 180  # window is skipped if the monitor polled this recently
 MONITOR_END = CONFIRM_WINDOWS[-1][2]
+STREAM_END = dtime(15, 31)  # keep streaming (recording candles) to the close
+STREAM_LOOP_SECONDS = 5  # serve-loop wake interval while the stream is being watched
+PLAUSIBLE_MOVE = 0.25  # NSE circuit limits keep a day's move well under this
 
 _monitor = {
     "date": None, "api": None, "last_poll": None, "next_attempt": None,
     "last_ok": None, "last_full": {}, "last_sig": {},
+    "stream": None, "stream_disabled": False, "verified": set(), "fast": False, "last_source": None,
+    "stream_started_at": None, "stream_ok_notified": False, "stream_fail_notified": False,
 }
 
 
-def _monitor_close():
+def _get_session():
+    """The one shared Angel login (REST fallback + stream tokens)."""
+    api = _monitor["api"]
+    if api is None:
+        api = AngelAPI()
+        api.login()  # raises -> callers back off
+        _monitor["api"] = api
+    return api
+
+
+def _monitor_close(force=False):
+    if _monitor["stream"] is not None and not force:
+        return  # the stream still needs this login
     api = _monitor["api"]
     _monitor["api"] = None
     if api is not None:
@@ -372,29 +401,136 @@ def _monitor_close():
             print(f"[monitor] logout raised {e.__class__.__name__}: {e}")
 
 
+def _stop_stream():
+    st = _monitor["stream"]
+    _monitor["stream"] = None
+    if st is not None:
+        try:
+            st.stop()
+        except Exception as e:
+            print(f"[stream] stop raised {e.__class__.__name__}: {e}")
+
+
 def _monitor_is_healthy(now) -> bool:
     ok = _monitor["last_ok"]
     return ok is not None and (now - ok).total_seconds() <= MONITOR_HEALTHY_SECONDS
 
 
+def _reset_day(now):
+    today = now.strftime("%Y-%m-%d")
+    if _monitor["date"] != today:
+        _stop_stream()
+        _monitor_close(force=True)
+        _monitor.update(
+            date=today, last_poll=None, next_attempt=None, last_ok=None, last_full={}, last_sig={},
+            stream_disabled=False, verified=set(), fast=False, last_source=None,
+            stream_started_at=None, stream_ok_notified=False, stream_fail_notified=False,
+        )
+
+
+def _manage_stream(now):
+    """Start the stream once the first snapshot has run and stop it after the
+    close. Failures here only mean we stay on REST polling."""
+    state = load_full_state()
+    candidates = [Candidate(**c) for c in state.get("candidates", [])]
+    wanted = bool(
+        config.STREAM_ENABLED
+        and not _monitor["stream_disabled"]
+        and candidates
+        and CONFIRM_WINDOWS[0][0] in state.get("confirm_checks_done", [])
+        and dtime(9, 15) <= now.time() <= STREAM_END
+    )
+    if wanted and _monitor["stream"] is None:
+        if _monitor["next_attempt"] and now < _monitor["next_attempt"]:
+            return  # a login/session just failed; don't hammer Angel
+        tokens = {c.token: c.symbol for c in candidates if c.token}
+        if not tokens:
+            return
+        api = _get_session()
+        client = stream.StreamClient(
+            config.ANGEL_API_KEY, config.ANGEL_CLIENT_CODE, api.auth_token, api.feed_token, tokens
+        )
+        client.start()
+        _monitor["stream"] = client
+        _monitor["stream_started_at"] = now
+        print(f"[stream] started for {', '.join(tokens.values())}")
+    elif not wanted and _monitor["stream"] is not None:
+        _stop_stream()
+        print("[stream] stopped")
+        if now.time() > MONITOR_END:
+            _monitor_close()
+
+
+STREAM_GRACE_SECONDS = 180  # how long a new stream gets to deliver data before we say so
+
+
+def _report_stream_status(now):
+    """One Telegram note per day when the stream first delivers data, or if it
+    never does -- so a problem with the live feed is visible on day one."""
+    st = _monitor["stream"]
+    if st is None or _monitor["stream_started_at"] is None:
+        return
+    if st.is_healthy(now):
+        if not _monitor["stream_ok_notified"]:
+            _monitor["stream_ok_notified"] = True
+            notify.send_message(f"*Live stream connected* — watching {len(st.symbols)} stocks tick by tick.")
+    elif (
+        not _monitor["stream_ok_notified"]
+        and not _monitor["stream_fail_notified"]
+        and (now - _monitor["stream_started_at"]).total_seconds() > STREAM_GRACE_SECONDS
+    ):
+        _monitor["stream_fail_notified"] = True
+        reason = str(getattr(st, "last_error", None) or "no data received").replace("_", " ").replace("*", "").replace("`", "")
+        notify.send_message(f"*Live stream not delivering data* — using REST polling instead. Reason: {reason}")
+
+
+def _distrust_stream(c, snap):
+    print(f"[stream] {c.symbol}: streamed price {snap.ltp} is implausible vs prior close {c.last_close} -- disabling stream for today")
+    _monitor["stream_disabled"] = True
+    _stop_stream()
+    notify.send_message(
+        f"*Live stream disabled*\n\nThe streamed price for {c.symbol} ({snap.ltp}) doesn't match its "
+        f"prior close ({c.last_close}), so today falls back to REST polling."
+    )
+
+
+def _stream_snapshot(c, now):
+    """A trustworthy fresh snapshot for this stock, or None (use REST)."""
+    st = _monitor["stream"]
+    if st is None or _monitor["stream_disabled"] or not st.is_healthy(now):
+        return None
+    snap = st.snapshot(c.token, now=now)
+    if snap is None:
+        return None
+    if c.symbol not in _monitor["verified"]:
+        # Guards against a unit mistake (paise vs rupees) or a wrong token
+        # silently feeding bad prices into entry decisions.
+        if c.last_close > 0 and abs(snap.ltp - c.last_close) / c.last_close > PLAUSIBLE_MOVE:
+            _distrust_stream(c, snap)
+            return None
+        _monitor["verified"].add(c.symbol)
+    return snap
+
+
 def run_monitor():
-    """One monitor tick; called every serve-loop iteration and self-throttles
-    to MONITOR_POLL_SECONDS. Never raises."""
+    """One monitor tick; called every serve-loop iteration. Never raises."""
+    now = timeutil.now_ist()
     try:
-        _run_monitor()
+        _reset_day(now)
+        _manage_stream(now)
+        _report_stream_status(now)
+    except Exception as e:
+        print(f"[stream] management raised {e.__class__.__name__}: {e}")
+        _monitor["next_attempt"] = now + timedelta(seconds=MONITOR_RETRY_SECONDS)
+    try:
+        _run_monitor(now)
     except Exception as e:
         print(f"[monitor] tick raised {e.__class__.__name__}: {e}")
         _monitor["next_attempt"] = timeutil.now_ist() + timedelta(seconds=MONITOR_RETRY_SECONDS)
         _monitor_close()
 
 
-def _run_monitor():
-    now = timeutil.now_ist()
-    today = now.strftime("%Y-%m-%d")
-    if _monitor["date"] != today:
-        _monitor_close()
-        _monitor.update(date=today, last_poll=None, next_attempt=None, last_ok=None, last_full={}, last_sig={})
-
+def _run_monitor(now):
     state = load_full_state()
     first_key = CONFIRM_WINDOWS[0][0]
     candidates = [Candidate(**c) for c in state.get("candidates", [])]
@@ -406,27 +542,48 @@ def _run_monitor():
         or first_key not in state.get("confirm_checks_done", [])
         or now.time() > MONITOR_END
     ):
-        _monitor_close()
+        _monitor["fast"] = False
+        _monitor_close()  # no-op while the stream is still recording
         return
 
-    if _monitor["last_poll"] and (now - _monitor["last_poll"]).total_seconds() < MONITOR_POLL_SECONDS:
+    st = _monitor["stream"]
+    use_stream = st is not None and not _monitor["stream_disabled"] and st.is_healthy(now)
+    poll_gap = MONITOR_STREAM_POLL_SECONDS if use_stream else MONITOR_POLL_SECONDS
+    full_gap = MONITOR_STREAM_FULL_CHECK_SECONDS if use_stream else MONITOR_FULL_CHECK_SECONDS
+    _monitor["fast"] = st is not None
+    if use_stream:
+        st.set_triggers(
+            {c.token: (c.direction, strategy.build_plan(c, len(candidates)).entry_trigger) for c in pending if c.token}
+        )
+
+    source = "stream" if use_stream else "rest"
+    # Changing source (e.g. the stream just dropped) polls immediately rather
+    # than waiting out the other source's interval.
+    if (
+        _monitor["last_poll"]
+        and _monitor["last_source"] == source
+        and (now - _monitor["last_poll"]).total_seconds() < poll_gap
+    ):
         return
     if _monitor["next_attempt"] and now < _monitor["next_attempt"]:
         return
     _monitor["last_poll"] = now
+    _monitor["last_source"] = source
 
-    api = _monitor["api"]
-    if api is None:
-        api = AngelAPI()
-        api.login()  # raises -> run_monitor() backs off
-        _monitor["api"] = api
+    api = _monitor["api"]  # only needed (and created) if a REST fallback is used
 
     hhmm = now.strftime("%H:%M")
     new_triggers, gate_entries, prices_seen = [], [], 0
     for c in pending:
         try:
             plan = strategy.build_plan(c, len(candidates))
-            ltp = api.get_ltp(c.symbol, c.token)
+            snap = _stream_snapshot(c, now) if use_stream else None
+            if snap is not None:
+                ltp = snap.ltp
+            else:
+                if api is None:
+                    api = _get_session()  # raises -> run_monitor() backs off
+                ltp = api.get_ltp(c.symbol, c.token)
             if ltp is None:
                 continue
             prices_seen += 1
@@ -434,10 +591,10 @@ def _run_monitor():
             if not crossed:
                 continue
             last_full = _monitor["last_full"].get(c.symbol)
-            if last_full and (now - last_full).total_seconds() < MONITOR_FULL_CHECK_SECONDS:
+            if last_full and (now - last_full).total_seconds() < full_gap:
                 continue
             _monitor["last_full"][c.symbol] = now
-            plan = strategy.check_confirmation(api, c, plan, len(candidates))
+            plan = strategy.check_confirmation(api, c, plan, len(candidates), snap=snap)
         except Exception as e:
             print(f"[monitor] {c.symbol}: raised {e.__class__.__name__}: {e}")
             continue
@@ -448,7 +605,7 @@ def _run_monitor():
                 plan.gates["too_late"], plan.gates["no_candles"],
             )
             if plan.status == "NO DATA":
-                _monitor["last_full"].pop(c.symbol, None)  # retry next poll, don't wait 5 min
+                _monitor["last_full"].pop(c.symbol, None)  # retry next poll, don't wait
             if plan.status == "ENTER NOW" or sig != _monitor["last_sig"].get(c.symbol):
                 gate_entries.append({"window": hhmm, "symbol": c.symbol, "status": plan.status, **plan.gates})
             _monitor["last_sig"][c.symbol] = sig
@@ -460,7 +617,8 @@ def _run_monitor():
         # Every price lookup failed: the session is probably dead.
         print(f"[monitor] no prices returned for any pending stock ({getattr(api, 'last_error', None)}) -- dropping session, will retry")
         _monitor["next_attempt"] = now + timedelta(seconds=MONITOR_RETRY_SECONDS)
-        _monitor_close()
+        _stop_stream()  # its login is probably dead too; restarts with a fresh one
+        _monitor_close(force=True)
         return
     _monitor["last_ok"] = now
 
@@ -820,6 +978,19 @@ def run_auto():
     print(f"[auto] {t} IST - nothing to do (outside windows or already sent today)")
 
 
+def _wait_for_next_tick():
+    """Sleep until the next loop iteration -- or, while the live stream is
+    running, wake early when a watched stock newly crosses its trigger (and
+    loop more often while watching)."""
+    st = _monitor["stream"]
+    if st is None or not st.running:
+        time.sleep(LOOP_INTERVAL_SECONDS)
+        return
+    st.wake.wait(STREAM_LOOP_SECONDS if _monitor["fast"] else LOOP_INTERVAL_SECONDS)
+    st.wake.clear()
+    time.sleep(1)  # never spin
+
+
 def run_serve_loop():
     """The persistent-service entry point (see module docstring for why
     this replaced Railway's Cron Schedule). Runs forever, checking the
@@ -832,7 +1003,7 @@ def run_serve_loop():
             run_auto()
         except Exception as e:
             print(f"[serve] run_auto() raised {e.__class__.__name__}: {e}")
-        time.sleep(LOOP_INTERVAL_SECONDS)
+        _wait_for_next_tick()
 
 
 def main():

@@ -65,6 +65,11 @@ UNIVERSE_MODE = os.getenv("UNIVERSE_MODE", "csv").strip().lower()
 UNIVERSE_MIN_DAILY_VALUE = _get_float("UNIVERSE_MIN_DAILY_VALUE", 50_000_000)  # Rs 5 crore
 UNIVERSE_MIN_PRICE = _get_float("UNIVERSE_MIN_PRICE", 20)
 
+# Stream live ticks over Angel's WebSocket instead of polling REST (see
+# src/stream.py). Falls back to REST polling automatically whenever the stream
+# is down; set STREAM_ENABLED=false to disable it entirely.
+STREAM_ENABLED = _get_bool("STREAM_ENABLED", True)
+
 # Don't enter once price is already more than this many ATRs past the
 # trigger -- a chase, with a stop sitting right back at the broken level.
 # Backtest (realistic fills): entries >0.5 ATR past the trigger lost money
