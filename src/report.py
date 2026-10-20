@@ -60,11 +60,15 @@ def format_confirmation(plans) -> str:
     if no_data:
         names = ", ".join(p.symbol for p in no_data)
         lines.append(f"⚠️ *Could not fetch live data for: {names}* — check Angel One connectivity.")
+        reasons = []
         for p in no_data:
             reason = p.error or (p.gates or {}).get("error")
             if reason:
                 reason = str(reason).replace("_", " ").replace("*", "").replace("`", "")
                 lines.append(f"  {p.symbol}: {reason}")
+            reasons.append(str(reason or ""))
+        if reasons and all("empty candle list" in r for r in reasons):
+            lines.append("  _Empty candles for every stock usually means the market is closed today._")
         lines.append("")
 
     if actionable:

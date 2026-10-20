@@ -153,6 +153,21 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    there's no risk of accidentally triggering one through casual chat
    with the bot.
 
+### Market holidays and Angel rate limits
+
+- **Holidays.** Weekends are skipped automatically. Weekday exchange holidays
+  come from `data/market_holidays.txt` (and the `MARKET_HOLIDAYS` env var,
+  comma-separated ISO dates): on those days nothing runs -- no watchlist,
+  checks, summary or paid eval -- and you get a single "Market Closed" note.
+  The file only holds dates confirmed against real data (currently 20 Oct
+  2026, Dussehra); add upcoming ones from NSE's published holiday list. A
+  confirmation message where every stock returns an empty candle list now
+  hints that the market may be closed.
+- **Rate limits.** Angel rejects bursts ("exceeding access rate"). Every Angel
+  data call is now spaced at least 0.35s apart, and a rate-limited or failed
+  call is retried twice with 1s / 2.5s backoff; a definite refusal (invalid
+  token etc.) is not retried.
+
 ### Reliability
 
 Two real production incidents (a bad confirm window silently blocking the

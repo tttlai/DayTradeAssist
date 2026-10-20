@@ -1,0 +1,10 @@
+# NSE equity market holidays, one ISO date (YYYY-MM-DD) per line. Weekends are
+# handled automatically -- list only weekday closures. On a listed day the tool
+# sends a single "market closed" note and runs no watchlist, checks, summary or
+# (paid) eval. Add upcoming holidays from NSE's published list:
+#   https://www.nseindia.com/resources/exchange-communication-holidays
+# Extra dates can also go in the MARKET_HOLIDAYS env var, comma-separated.
+#
+# Only dates confirmed against real data belong here; a wrong entry would skip
+# a genuine trading day.
+2026-10-20  # Dussehra -- confirmed: NSE published no bhavcopy for this Tuesday

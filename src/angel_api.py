@@ -15,12 +15,25 @@ from SmartApi import SmartConnect
 
 from . import config, timeutil
 
+# Angel rejects bursts ("Access denied because of exceeding access rate"), and
+# the SDK surfaces that as a JSON-parse exception. Space calls out, and retry a
+# rate-limited or failed call a couple of times with backoff before giving up.
+MIN_CALL_GAP_SECONDS = 0.35
+RETRY_DELAYS = (1.0, 2.5)
+_RATE_LIMIT_MARKERS = ("access rate", "exceeding", "too many")
+
+
+def _is_rate_limited(text: str) -> bool:
+    text = (text or "").lower()
+    return any(marker in text for marker in _RATE_LIMIT_MARKERS)
+
 
 class AngelAPI:
     def __init__(self):
         self._client = None
         self._scrip_master = None
         self.last_error: str | None = None  # why the most recent data call failed
+        self._last_call_at = 0.0
 
     def login(self):
         totp = pyotp.TOTP(config.ANGEL_TOTP_SECRET).now()
@@ -81,17 +94,50 @@ class AngelAPI:
                 return row.get("token")
         return None
 
-    def get_ltp(self, symbol: str, token: str) -> float | None:
+    def _pace(self):
+        wait = MIN_CALL_GAP_SECONDS - (time.monotonic() - self._last_call_at)
+        if wait > 0:
+            time.sleep(wait)
+        self._last_call_at = time.monotonic()
+
+    def _call(self, label: str, fn):
+        """Runs one Angel data request with pacing and retries. Returns the
+        reply dict on success (status true), else None with self.last_error
+        set. Exceptions and rate-limit replies are retried with backoff; a
+        definite refusal (invalid token, etc.) is not."""
         self.last_error = None
+        for attempt in range(len(RETRY_DELAYS) + 1):
+            self._pace()
+            try:
+                result = fn()
+            except Exception as e:
+                self.last_error = f"{e.__class__.__name__}: {str(e)[:120]}"
+            else:
+                if isinstance(result, dict) and result.get("status"):
+                    self.last_error = None  # a retry that worked leaves no stale error behind
+                    return result
+                if isinstance(result, dict):
+                    self.last_error = f"{result.get('message')} ({result.get('errorcode')})"
+                else:
+                    self.last_error = f"unexpected reply: {str(result)[:80]}"
+                if not _is_rate_limited(self.last_error):
+                    break
+            if attempt < len(RETRY_DELAYS):
+                print(f"[angel_api] {label} failed ({self.last_error}); retrying in {RETRY_DELAYS[attempt]}s")
+                time.sleep(RETRY_DELAYS[attempt])
+        print(f"[angel_api] {label} failed: {self.last_error}")
+        return None
+
+    def get_ltp(self, symbol: str, token: str) -> float | None:
+        result = self._call(f"get_ltp({symbol})", lambda: self._client.ltpData("NSE", f"{symbol}-EQ", token))
+        if result is None:
+            return None
         try:
-            data = self._client.ltpData("NSE", f"{symbol}-EQ", token)
-            if data.get("status"):
-                return float(data["data"]["ltp"])
-            self.last_error = f"{data.get('message')} ({data.get('errorcode')})"
+            return float(result["data"]["ltp"])
         except Exception as e:
             self.last_error = f"{e.__class__.__name__}: {str(e)[:120]}"
-        print(f"[angel_api] get_ltp({symbol}) failed: {self.last_error}")
-        return None
+            print(f"[angel_api] get_ltp({symbol}) malformed reply: {self.last_error}")
+            return None
 
     def get_daily_candles(self, token: str, days: int = 40):
         """Returns list of [timestamp, open, high, low, close, volume].
@@ -107,16 +153,8 @@ class AngelAPI:
             "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
             "todate": to_date.strftime("%Y-%m-%d %H:%M"),
         }
-        self.last_error = None
-        try:
-            result = self._client.getCandleData(params)
-        except Exception as e:
-            self.last_error = f"{e.__class__.__name__}: {str(e)[:120]}"
-            print(f"[angel_api] get_daily_candles({token}) raised {e.__class__.__name__}: {e}")
-            return []
-        if not result.get("status"):
-            self.last_error = f"{result.get('message')} ({result.get('errorcode')})"
-            print(f"[angel_api] get_daily_candles({token}) status false: {self.last_error}")
+        result = self._call(f"get_daily_candles({token})", lambda: self._client.getCandleData(params))
+        if result is None:
             return []
         return (result.get("data") or [])[-days:]
 
@@ -133,16 +171,8 @@ class AngelAPI:
             "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
             "todate": today.strftime("%Y-%m-%d %H:%M"),
         }
-        self.last_error = None
-        try:
-            result = self._client.getCandleData(params)
-        except Exception as e:
-            self.last_error = f"{e.__class__.__name__}: {str(e)[:120]}"
-            print(f"[angel_api] get_intraday_candles({token}) raised {e.__class__.__name__}: {e}")
-            return []
-        if not result.get("status"):
-            self.last_error = f"{result.get('message')} ({result.get('errorcode')})"
-            print(f"[angel_api] get_intraday_candles({token}) status false: {self.last_error}")
+        result = self._call(f"get_intraday_candles({token})", lambda: self._client.getCandleData(params))
+        if result is None:
             return []
         data = result.get("data") or []
         if not data:

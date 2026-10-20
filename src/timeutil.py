@@ -1,7 +1,10 @@
 """IST time helpers, used instead of datetime.now() everywhere so behavior
 doesn't depend on the host container's timezone (Railway runs UTC)."""
 import calendar
+import os
 from datetime import date, datetime, timedelta, timezone
+
+from . import config
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
 
@@ -19,6 +22,37 @@ def minutes_since_open(now: datetime | None = None) -> float | None:
     now = now or now_ist()
     mins = (now.hour * 60 + now.minute + now.second / 60) - (MARKET_OPEN[0] * 60 + MARKET_OPEN[1])
     return mins if 0 < mins <= MARKET_MINUTES else None
+
+
+def market_holidays() -> set[date]:
+    """Weekday exchange closures: data/market_holidays.txt plus the
+    MARKET_HOLIDAYS env var (comma-separated ISO dates). Unparseable entries
+    are ignored rather than breaking the schedule."""
+    entries = []
+    try:
+        entries += config.MARKET_HOLIDAYS_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        pass
+    entries += os.getenv("MARKET_HOLIDAYS", "").split(",")
+    days = set()
+    for entry in entries:
+        text = entry.split("#")[0].strip()
+        if not text:
+            continue
+        try:
+            days.add(date.fromisoformat(text))
+        except ValueError:
+            print(f"[timeutil] ignoring unparseable holiday entry: {text!r}")
+    return days
+
+
+def is_weekend(d: date) -> bool:
+    return d.weekday() >= 5
+
+
+def is_trading_day(d: date | None = None) -> bool:
+    d = d or now_ist().date()
+    return not is_weekend(d) and d not in market_holidays()
 
 
 def candle_time_str(timestamp) -> str:

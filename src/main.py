@@ -100,6 +100,7 @@ def _default_state() -> dict:
         "confirmed_plans": [],
         "sent_watchlist": False,
         "watchlist_failure_notified": False,
+        "closed_notified": False,  # the one "market closed today" note has been sent
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "gate_log": [],  # per-window, per-stock confirmation gate results, reused by run_eval()
         "sent_summary": False,
@@ -707,9 +708,30 @@ def run_eval():
 def run_auto():
     """Decide what to do based on current IST time + today's state."""
     handle_commands()
+
+    now = timeutil.now_ist()
+    if not timeutil.is_trading_day(now.date()):
+        # Weekend or listed exchange holiday: no watchlist, checks, summary or
+        # (paid) eval. Weekends stay silent; a weekday holiday gets one note so
+        # you can tell the tool knows rather than being broken.
+        state = load_full_state()
+        if (
+            not timeutil.is_weekend(now.date())
+            and not state.get("closed_notified")
+            and now.time() >= WATCHLIST_WINDOW[0]
+        ):
+            notify.send_message(
+                "*Market Closed*\n\nToday is an exchange holiday -- no watchlist, "
+                "confirmation checks or eval will run."
+            )
+            state["closed_notified"] = True
+            save_full_state(state)
+        print(f"[auto] {now.date()} is not a trading day -- nothing to do")
+        return
+
     run_monitor()
 
-    t = timeutil.now_ist().time()
+    t = now.time()
     state = load_full_state()
 
     if WATCHLIST_WINDOW[0] <= t <= WATCHLIST_WINDOW[1] and not state.get("sent_watchlist"):

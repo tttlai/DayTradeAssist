@@ -90,6 +90,7 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "")  # "owner/repo"
 GITHUB_BASE_BRANCH = os.getenv("GITHUB_BASE_BRANCH", "master")
 
+MARKET_HOLIDAYS_FILE = ROOT_DIR / "data" / "market_holidays.txt"
 UNIVERSE_CSV = ROOT_DIR / "data" / "universe.csv"
 SCRIP_MASTER_URL = (
     "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
