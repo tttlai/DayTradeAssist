@@ -74,6 +74,14 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
    daily-value and price floor (`UNIVERSE_MIN_DAILY_VALUE`,
    `UNIVERSE_MIN_PRICE`), but it is opt-in because the backtest (realistic
    fills, 120 days) was clearly worse with it than with the CSV list.
+   At most `MAX_PER_SECTOR` (default 2) watchlist picks may come from one
+   sector, using the `sector` column of `data/universe.csv`, because a
+   trending sector can otherwise fill the list with one correlated bet (the
+   five IT names did exactly that for six days running). Backtest over 120
+   days with realistic fills: a cap of 2 was neutral (-3,297 vs -3,288 with no
+   cap) and a cap of 1 hurt (-5,905); only 4 of 110 two-plus-pick days
+   historically had every pick in a single sector, so this guards the extreme
+   case and costs nothing. `0` turns it off; sector labels are approximate.
    Each check's price/volume/VWAP/too-late results are recorded and shown
    to the daily eval. The original description of each check follows:
    re-checks each still-pending

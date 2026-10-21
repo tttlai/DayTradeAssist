@@ -70,6 +70,12 @@ UNIVERSE_MIN_PRICE = _get_float("UNIVERSE_MIN_PRICE", 20)
 # is down; set STREAM_ENABLED=false to disable it entirely.
 STREAM_ENABLED = _get_bool("STREAM_ENABLED", True)
 
+# At most this many watchlist picks from one sector (0 = no cap). The picks
+# are ranked by a technical score, and a trending sector can fill the whole
+# list with what is really one correlated bet. Sectors come from the `sector`
+# column of data/universe.csv (stocks without one are never capped).
+MAX_PER_SECTOR = _get_int("MAX_PER_SECTOR", 2)
+
 # Don't enter once price is already more than this many ATRs past the
 # trigger -- a chase, with a stop sitting right back at the broken level.
 # Backtest (realistic fills): entries >0.5 ATR past the trigger lost money

@@ -54,6 +54,43 @@ def load_universe():
         return [row["symbol"] for row in csv.DictReader(f)]
 
 
+def load_sectors() -> dict[str, str]:
+    """{symbol: sector} from the optional `sector` column of the universe CSV."""
+    try:
+        with open(config.UNIVERSE_CSV, newline="") as f:
+            return {
+                row["symbol"]: row["sector"].strip()
+                for row in csv.DictReader(f)
+                if (row.get("sector") or "").strip()
+            }
+    except OSError:
+        return {}
+
+
+def select_picks(candidates, max_picks, accept=None) -> list["Candidate"]:
+    """Top `max_picks` from candidates (already ranked best-first), skipping
+    any beyond MAX_PER_SECTOR for their sector and any `accept(c)` rejects.
+    Stocks with no known sector are never capped."""
+    if max_picks <= 0:
+        return []
+    sectors = load_sectors() if config.MAX_PER_SECTOR > 0 else {}
+    counts: dict[str, int] = {}
+    picks = []
+    for cand in candidates:
+        sector = sectors.get(cand.symbol)
+        if sector and counts.get(sector, 0) >= config.MAX_PER_SECTOR:
+            print(f"[screener] Skipping {cand.symbol}: already {config.MAX_PER_SECTOR} pick(s) in {sector}")
+            continue
+        if accept is not None and not accept(cand):
+            continue
+        picks.append(cand)
+        if sector:
+            counts[sector] = counts.get(sector, 0) + 1
+        if len(picks) >= max_picks:
+            break
+    return picks
+
+
 def universe_symbols() -> list[str] | None:
     """Symbols to fetch history for: the CSV list, or None meaning "every
     stock in the bhavcopy" in liquid mode (liquidity/price floors are then
@@ -174,13 +211,10 @@ def build_watchlist(token_lookup, history, max_picks=None) -> list[Candidate]:
     # Look up Angel tokens only for stocks we might actually pick (a wide
     # universe can produce hundreds of candidates), and skip any Angel can't
     # quote -- it could never be monitored or confirmed.
-    picks = []
-    for cand in affordable:
+    def has_token(cand):
         cand.token = token_lookup(cand.symbol) or ""
         if not cand.token:
             print(f"[screener] Skipping {cand.symbol}: no Angel One instrument token")
-            continue
-        picks.append(cand)
-        if len(picks) >= max_picks:
-            break
-    return picks
+        return bool(cand.token)
+
+    return select_picks(affordable, max_picks, accept=has_token)

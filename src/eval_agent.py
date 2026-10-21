@@ -236,9 +236,6 @@ def _history_detail(h) -> str:
             )
         )
     watchlist = h.get("watchlist") or []
-    approach = [f"{w['symbol']} {w['approach_pct']}" for w in watchlist if w.get("approach_pct") is not None]
-    if approach:
-        parts.append(", approach% " + ", ".join(approach))
     blocked = [
         f"{w['symbol']}{' GAP' if w.get('gapped_through') else ''} "
         + "/".join(str(w["blocked_by"].get(k, 0)) for k in ("price", "volume", "vwap", "late"))
@@ -267,7 +264,6 @@ def build_prompt(candidates, outcomes, confirmed_results, history, gate_log=None
             f"ATR% {round(c.atr / c.last_close * 100, 2) if c.last_close else '?'} | "
             f"open {o.get('day_open', '?')}{' (GAPPED THROUGH trigger at the open)' if o.get('gapped_through') else ''}, "
             f"day range {o.get('day_low', '?')}-{o.get('day_high', '?')}, close {o.get('day_close', '?')} | "
-            f"got {o.get('approach_pct', '?')}% of the way from prior close to trigger | "
             f"{status}\n    confirm checks -- {format_gate_log(gate_log, c.symbol)}"
         )
 
@@ -312,7 +308,18 @@ HOW THE TOOL ALREADY WORKS -- do not suggest things that exist or were already t
   headline backtest profit was inflated by assuming fills at the trigger. A gap
   day being rejected is expected behaviour, not a bug, unless you have clear
   multi-day evidence otherwise.
+- "ATR past trigger" is measured from the ENTRY level (the trigger +/-0.1%), so it
+  reads slightly lower than the distance from the raw trigger price.
+- Angel calls are already spaced out and retried with backoff, and live price/VWAP/
+  volume come from a WebSocket stream when it is connected (REST polling otherwise);
+  a "NO CANDLE DATA" row followed by a pass is that retry working. Do not suggest
+  adding retries or staggering fetches.
 - "NO CANDLE DATA" means Angel returned nothing; it says nothing about volume/VWAP.
+- Stops/targets are 1x/2x the DAILY ATR from entry, which one session rarely reaches,
+  so most trades end as TIME_EXIT at 15:15 (about 88% in backtests). That is known,
+  not new information; only comment on it with multi-day evidence.
+- At most 2 watchlist picks per sector (backtests: a cap of 1 hurt, 2 was neutral).
+  Do not suggest a sector cap.
 - Overall the backtest found no clear edge, so treat samples of a few trades as noise.
 - You are NOT given exit times, so do not claim how quickly a trade was stopped.
 

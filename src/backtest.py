@@ -73,6 +73,7 @@ def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=No
     print(f"Replaying {len(eval_dates)} trading days "
           f"(stop={stop_multiple}x ATR, target={target_multiple}x ATR)...")
     trades = []
+    pick_days = one_sector_days = 0
     for date in eval_dates:
         day_candidates = []
         for symbol, candles in history.items():
@@ -86,7 +87,12 @@ def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=No
         day_candidates.sort(key=lambda c: c.score, reverse=True)
         price_ceiling = risk.min_affordable_price(max_picks)
         affordable = [c for c in day_candidates if c.last_close <= price_ceiling]
-        picks = affordable[:max_picks]
+        picks = screener.select_picks(affordable, max_picks)
+        sectors = screener.load_sectors()
+        if len(picks) >= 2:
+            pick_days += 1
+            if len({sectors.get(c.symbol) or c.symbol for c in picks}) == 1:
+                one_sector_days += 1
 
         for cand in picks:
             plan = strategy.build_plan(
@@ -159,6 +165,8 @@ def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=No
             )
 
     print_report(trades, len(eval_dates))
+    print(f"Sector cap      : MAX_PER_SECTOR={config.MAX_PER_SECTOR} -- {one_sector_days} of {pick_days} "
+          f"days with 2+ picks had every pick in ONE sector")
 
 
 def print_report(trades, num_days):
@@ -242,6 +250,15 @@ def print_gap_report(trades):
     print(_line("   ...same trades, realistic fill at open", gap, "realistic_pnl"))
     realistic_total = sum(t["realistic_pnl"] for t in trades)
     print(f"  Whole backtest with realistic fills             : total Rs {realistic_total:,.0f}")
+    by_day = defaultdict(float)
+    for t in trades:
+        by_day[t["date"]] += t["realistic_pnl"]
+    equity = peak = drawdown = 0.0
+    for day in sorted(by_day):
+        equity += by_day[day]
+        peak = max(peak, equity)
+        drawdown = min(drawdown, equity - peak)
+    print(f"  Realistic max drawdown                          : Rs {drawdown:,.0f}")
     chased = [t for t in trades if t["kind"] != "normal"]
     print("Entry-distance guard (realistic fills; chase = how many ATRs past the trigger")
     print("the open already was):")
