@@ -187,6 +187,8 @@ of at the next poll, with no rate limit and no empty-candle failures.
   stocks. That is real intraday history to backtest against later; the free
   NSE files only have daily bars. A candle is `partial` if the stream joined
   mid-minute (its volume undercounts).
+- Send `/stream` in Telegram to check it: connection health, the latest price/VWAP/
+  volume per stock, and how many minute candles have been recorded today.
 - Turn it off with `STREAM_ENABLED=false`.
 
 ### Market holidays and Angel rate limits

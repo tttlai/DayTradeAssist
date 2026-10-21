@@ -187,6 +187,8 @@ def handle_commands():
             github_pr.close_pr(pending["pr_number"])
             notify.send_message(f"Dismissed — *{pending['param']}* suggestion rejected, PR closed.")
             clear_pending_suggestion()
+        elif cmd == "/stream":
+            notify.send_message(stream_status_text())
         elif cmd == "/stats":
             notify.send_message(store.trade_stats(store.read_records("trades.jsonl")))
         elif cmd in ("/health", "/status"):
@@ -198,7 +200,7 @@ def handle_commands():
                 "Angel One + Railway status."
             )
         else:
-            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats")
+            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats, /stream")
 
     if new_last_id != last_id:
         _save_last_update_id(new_last_id)
@@ -482,6 +484,47 @@ def _report_stream_status(now):
         _monitor["stream_fail_notified"] = True
         reason = str(getattr(st, "last_error", None) or "no data received").replace("_", " ").replace("*", "").replace("`", "")
         notify.send_message(f"*Live stream not delivering data* — using REST polling instead. Reason: {reason}")
+
+
+def stream_status_text() -> str:
+    """Plain-text answer to /stream: is the live feed up, what is it seeing,
+    and how many one-minute candles have been recorded today."""
+    now = timeutil.now_ist()
+    lines = ["Live stream status", ""]
+    st = _monitor["stream"]
+    if not config.STREAM_ENABLED:
+        lines.append("Disabled (STREAM_ENABLED=false).")
+    elif _monitor["stream_disabled"]:
+        lines.append("Disabled for today (an implausible streamed price was seen); using REST polling.")
+    elif st is None:
+        lines.append("Not running right now (it runs from the 09:20 snapshot until 15:31 on trading days).")
+    else:
+        lines.append(f"Connection: {'healthy, ticks arriving' if st.is_healthy(now) else 'NOT healthy (no recent ticks)'}")
+        if getattr(st, "last_error", None):
+            lines.append(f"Last error: {str(st.last_error).replace('_', ' ')}")
+        for token, symbol in st.symbols.items():
+            snap = st.snapshot(token, max_age=10**9, now=now)
+            if snap is None:
+                lines.append(f"{symbol}: no tick yet")
+                continue
+            age = int((now - snap.received_at).total_seconds())
+            vwap = f"{snap.vwap:.2f}" if snap.vwap else "n/a"
+            lines.append(f"{symbol}: last {snap.ltp:.2f}, VWAP {vwap}, volume {snap.volume:,.0f}, {age}s ago")
+
+    today = now.strftime("%Y-%m-%d")
+    candles = [r for r in store.read_records(stream.CANDLE_FILE) if r.get("date") == today]
+    lines.append("")
+    if not candles:
+        lines.append("Minute candles recorded today: none")
+    else:
+        lines.append(f"Minute candles recorded today: {len(candles)}")
+        by_symbol = {}
+        for r in candles:
+            by_symbol.setdefault(r["symbol"], []).append(r)
+        for symbol, rows in by_symbol.items():
+            last = rows[-1]
+            lines.append(f"{symbol}: {len(rows)} (last {last['t']}, close {last['c']})")
+    return "\n".join(lines)
 
 
 def _distrust_stream(c, snap):
