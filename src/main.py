@@ -56,7 +56,7 @@ import json
 import time
 from datetime import time as dtime, timedelta
 
-from . import config, eval_agent, github_pr, health, notify, nse_data, report, screener, store, stream, strategy, telegram_commands, timeutil, tradesim
+from . import config, eval_agent, github_pr, health, notify, nse_data, report, screener, store, stream, strategy, telegram_commands, timeutil, tradepath, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
@@ -696,12 +696,14 @@ def run_summary():
     try:
         results = []
         failed_symbols = []
+        intraday_by_symbol = {}
         for plan in plans:
             try:
                 intraday = api.get_intraday_candles(plan.token, interval="FIFTEEN_MINUTE")
                 if not intraday:
                     time.sleep(2)  # one retry: an empty reply is usually transient
                     intraday = api.get_intraday_candles(plan.token, interval="FIFTEEN_MINUTE")
+                intraday_by_symbol[plan.symbol] = intraday
                 relevant = [
                     c
                     for c in intraday
@@ -775,8 +777,35 @@ def run_summary():
             for plan, sim, trade_pnl in results
         ]
         save_full_state(state)
+        _record_trade_paths(state, plans, intraday_by_symbol, trade_date)
     finally:
         api.logout()
+
+
+def _record_trade_paths(state, plans, intraday_by_symbol, trade_date):
+    """Replay each confirmed trade against the day's candles (src/tradepath.py),
+    keep the record permanently, and send a short "Trade Review". Purely
+    observational and never raises, so it can't affect the summary."""
+    try:
+        candidates = {c["symbol"]: c for c in state.get("candidates", [])}
+        stream_records = store.read_records(stream.CANDLE_FILE)
+        fresh = []
+        for plan in plans:
+            cand = candidates.get(plan.symbol, {})
+            trade = {
+                "symbol": plan.symbol, "direction": plan.direction, "entered_at": plan.entered_at,
+                "entry": plan.entry_trigger, "stop_loss": plan.stop_loss, "target": plan.target,
+                "trigger_level": cand.get("trigger_level"), "atr": cand.get("atr"),
+                "avg_volume_20": cand.get("avg_volume_20"),
+            }
+            record = tradepath.review_trade(trade, stream_records, trade_date, intraday_by_symbol.get(plan.symbol))
+            record["date"] = trade_date
+            if store.append_record("trade_paths.jsonl", record, key=("date", "symbol")) and record.get("source") != "none":
+                fresh.append(record)
+        if fresh:
+            notify.send_message(report.format_trade_paths(fresh))
+    except Exception as e:
+        print(f"[summary] trade path review failed: {e.__class__.__name__}: {e}")
 
 
 def run_eval():
@@ -790,6 +819,9 @@ def run_eval():
     candidates = [Candidate(**c) for c in state.get("candidates", [])]
     confirmed_results = eval_agent.attach_entry_details(
         state.get("summary_results", []), state.get("confirmed_plans", [])
+    )
+    confirmed_results = eval_agent.attach_paths(
+        confirmed_results, store.read_records("trade_paths.jsonl"), state.get("date") or _today_key()
     )
 
     if not candidates:

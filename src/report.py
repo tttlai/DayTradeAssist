@@ -111,6 +111,31 @@ def format_new_triggers(plans, check_time: str) -> str:
     return "\n".join(lines)
 
 
+def format_trade_paths(paths) -> str:
+    """Observation-only look back at what each trade's price did after entry
+    (src/tradepath.py). Informational: nothing here changes any decision."""
+    lines = ["*Trade Review — what price did after entry*", ""]
+    for p in paths:
+        src = {"stream_1m": "1-min candles", "rest_15m": "15-min candles"}.get(p.get("source"), "")
+        lines.append(f"*{p['symbol']}* — {p['direction']}" + (f" _({src})_" if src else ""))
+        lines.append(
+            f"  Best {p['mfe_atr']:+.2f} ATR at {p['mfe_t']} | worst -{p['mae_atr']:.2f} ATR at {p['mae_t']} "
+            f"| exit {p['exit_atr']:+.2f} ATR"
+        )
+        events = [
+            f"{e['event'].replace('_', ' ')} {e['t']}"
+            for e in p["events"]
+            if not e["event"].startswith(("favorable", "adverse"))
+        ]
+        if events:
+            lines.append("  Events: " + "; ".join(events))
+        else:
+            lines.append("  Events: none of the warning signs occurred")
+        lines.append("")
+    lines.append("_Review only — shows how a trade evolved; it is not an exit signal._")
+    return "\n".join(lines)
+
+
 def format_daily_summary(results, failed_symbols=None) -> str:
     """results: list of (TradePlan, tradesim.SimResult, pnl) for trades that
     were actually confirmed ('ENTER NOW') today. failed_symbols: confirmed

@@ -151,6 +151,30 @@ def attach_entry_details(confirmed_results, confirmed_plans) -> list[dict]:
     return enriched
 
 
+def attach_paths(confirmed_results, path_records, date) -> list[dict]:
+    """Adds each trade's post-entry path summary (src/tradepath.py), if one
+    was recorded for this date, under "path"."""
+    by_symbol = {p.get("symbol"): p for p in path_records or [] if p.get("date") == date}
+    return [{**r, "path": by_symbol.get(r.get("symbol"))} for r in confirmed_results]
+
+
+def format_path_details(path) -> str:
+    if not path or path.get("source") in (None, "none") or path.get("mfe_atr") is None:
+        return ""
+    warnings = [
+        f"{e['event'].replace('_', ' ')} {e['t']}"
+        for e in path.get("events", [])
+        if not e["event"].startswith(("favorable", "adverse"))
+    ]
+    text = (
+        f"; after entry: best +{path['mfe_atr']} ATR @{path['mfe_t']}, worst -{path['mae_atr']} ATR "
+        f"@{path['mae_t']}, closed {path['exit_atr']:+} ATR"
+    )
+    if warnings:
+        text += f", signs of weakness: {'; '.join(warnings)}"
+    return text
+
+
 def format_entry_details(entry) -> str:
     if not entry or not any(v is not None for v in entry.values()):
         return ""
@@ -269,7 +293,7 @@ def build_prompt(candidates, outcomes, confirmed_results, history, gate_log=None
 
     confirmed_lines = [
         f"- {r['symbol']} {r['direction']}: entry {r['entry']} -> exit {r['exit']} "
-        f"({r['outcome']}), P&L Rs {r['pnl']:.0f}{format_entry_details(r.get('entry_info'))}"
+        f"({r['outcome']}), P&L Rs {r['pnl']:.0f}{format_entry_details(r.get('entry_info'))}{format_path_details(r.get('path'))}"
         for r in confirmed_results
     ] or ["(nothing was confirmed today)"]
 
@@ -322,6 +346,9 @@ HOW THE TOOL ALREADY WORKS -- do not suggest things that exist or were already t
   Do not suggest a sector cap.
 - Overall the backtest found no clear edge, so treat samples of a few trades as noise.
 - You are NOT given exit times, so do not claim how quickly a trade was stopped.
+- "after entry" summaries are observation only (best/worst excursion in ATRs and when
+  warning signs first appeared). With only a handful of trades they cannot justify
+  an exit rule; do not propose one from them.
 
 Please answer concretely, grounded in the numbers above, not generic trading
 platitudes:

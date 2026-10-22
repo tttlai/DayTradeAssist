@@ -196,6 +196,27 @@ of at the next poll, with no rate limit and no empty-candle failures.
   volume per stock, and how many minute candles have been recorded today.
 - Turn it off with `STREAM_ENABLED=false`.
 
+### Trade review (what happened after entry)
+
+Once a stock is confirmed the tool doesn't act on it again -- stops, targets
+and the 15:15 exit stay as alerted. To learn whether that is leaving money on
+the table, every confirmed trade is replayed after the close
+(`src/tradepath.py`) against the day's recorded one-minute candles (or Angel's
+15-minute candles if the stream recorded too few). You get a short **Trade
+Review** message after the summary, and the same record is kept in
+`trade_paths.jsonl` and shown to the daily eval.
+
+Per trade it reports the best and worst price reached in ATRs (and when), the
+exit versus entry in ATRs, and when each warning sign *first* appeared: price
+back through the trigger, price on the wrong side of VWAP, volume pace fading
+below its 20-day norm, and the stop/target levels being touched.
+
+This is **observation only**: nothing changes any decision, and the message
+says so. Its purpose is to build a record so exit rules (trailing stops,
+breakeven, "exit when VWAP flips") can later be replayed against real
+minute data and kept only if they beat holding to 15:15. With a handful of
+trades it proves nothing either way.
+
 ### Market holidays and Angel rate limits
 
 - **Holidays.** Weekends are skipped automatically. Weekday exchange holidays
@@ -536,6 +557,10 @@ The permanent logs are append-only, one JSON object per line, never pruned:
 - `trades.jsonl` -- one record per confirmed trade: entry time/price, stop,
   target, quantity, exit price, outcome, P&L, and the confirmation readings at
   entry (`UNKNOWN` outcome when the data failed).
+- `trade_paths.jsonl` -- one record per confirmed trade describing what price
+  did AFTER entry (see "Trade review" below).
+- `candles_1m.jsonl` -- the stream's closed one-minute candles for the day's
+  watchlist stocks (`date, symbol, t, o, h, l, c, v, partial`).
 - `days.jsonl` -- one record per day: the settings in force, the watchlist,
   each stock's day open/high/low/close and whether it crossed, and the full
   check-by-check gate log.
