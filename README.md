@@ -165,13 +165,18 @@ loop (not a Railway Cron Schedule — see the Deploy section for why):
 
 Instead of repeatedly polling Angel's REST API, the tool holds one
 WebSocket open (`src/stream.py`, Angel's SmartWebSocketV2, read-only) from
-the 09:20 snapshot until 15:31 and subscribes to the day's watchlist. Each
+the 09:15 open until 15:31 and subscribes to the day's watchlist. Each
 packet carries the last price, the **exchange's own running VWAP**,
 cumulative day volume and the day's open/high/low, so the confirmation check
 needs no candle fetches at all: a breakout is seen within a couple of seconds
 (the main loop wakes the instant a watched stock crosses its trigger) instead
 of at the next poll, with no rate limit and no empty-candle failures.
 
+- **The 09:20 snapshot reads the stream.** Because the stream is already up
+  by then, the first confirmation check uses its snapshots and makes no REST
+  calls, which avoids the burst of price and candle requests that hit Angel's
+  rate limit at 09:20 (it failed for TCS two days running). A stock the stream
+  has no data for yet falls back to REST on its own.
 - **REST is the automatic fallback.** If the stream is down, stale (no ticks
   for 90s) or has no data for a stock yet, the monitor polls REST exactly as
   before, and switches back when the stream recovers.

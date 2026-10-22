@@ -300,10 +300,11 @@ def run_confirm(window_key: str):
         save_full_state(state)
         return
 
-    # A later window only runs its own check when the monitor isn't healthy;
-    # reuse the shared login if there is one (logging out would also kill the
-    # live stream that depends on it).
-    shared = None if is_first_check else _monitor["api"]
+    # Reuse the shared login when there is one (the live stream is running):
+    # logging out would also kill the stream that depends on it. With no
+    # stream (disabled, or it never started) this window logs in and out
+    # itself, as it always did.
+    shared = _monitor["api"]
     api = shared or AngelAPI()
     if shared is None:
         api.login()
@@ -313,7 +314,11 @@ def run_confirm(window_key: str):
         for c in pending:
             plan = strategy.build_plan(c, len(candidates))
             try:
-                plan = strategy.check_confirmation(api, c, plan, len(candidates))
+                # Read the live stream when it has trustworthy data for this
+                # stock (no REST call at all, so no rate limit); otherwise
+                # fall back to REST for it.
+                snap = _stream_snapshot(c, timeutil.now_ist())
+                plan = strategy.check_confirmation(api, c, plan, len(candidates), snap=snap)
             except Exception as e:
                 # One stock's API hiccup shouldn't abort the whole window --
                 # if it did, confirm_checks_done below would never get
@@ -431,15 +436,15 @@ def _reset_day(now):
 
 
 def _manage_stream(now):
-    """Start the stream once the first snapshot has run and stop it after the
-    close. Failures here only mean we stay on REST polling."""
+    """Start the stream at the 09:15 open (so the 09:20 snapshot can read it
+    rather than burst REST calls) and stop it after the close. Failures here
+    only mean we stay on REST polling."""
     state = load_full_state()
     candidates = [Candidate(**c) for c in state.get("candidates", [])]
     wanted = bool(
         config.STREAM_ENABLED
         and not _monitor["stream_disabled"]
         and candidates
-        and CONFIRM_WINDOWS[0][0] in state.get("confirm_checks_done", [])
         and dtime(9, 15) <= now.time() <= STREAM_END
     )
     if wanted and _monitor["stream"] is None:
@@ -497,7 +502,7 @@ def stream_status_text() -> str:
     elif _monitor["stream_disabled"]:
         lines.append("Disabled for today (an implausible streamed price was seen); using REST polling.")
     elif st is None:
-        lines.append("Not running right now (it runs from the 09:20 snapshot until 15:31 on trading days).")
+        lines.append("Not running right now (it runs from the 09:15 open until 15:31 on trading days).")
     else:
         lines.append(f"Connection: {'healthy, ticks arriving' if st.is_healthy(now) else 'NOT healthy (no recent ticks)'}")
         if getattr(st, "last_error", None):
