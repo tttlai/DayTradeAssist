@@ -167,6 +167,7 @@ def run_backtest(days=60, max_picks=None, stop_multiple=None, target_multiple=No
     print_report(trades, len(eval_dates))
     print(f"Sector cap      : MAX_PER_SECTOR={config.MAX_PER_SECTOR} -- {one_sector_days} of {pick_days} "
           f"days with 2+ picks had every pick in ONE sector")
+    return trades
 
 
 def print_report(trades, num_days):
