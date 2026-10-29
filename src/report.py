@@ -111,17 +111,28 @@ def format_new_triggers(plans, check_time: str) -> str:
     return "\n".join(lines)
 
 
-def format_gap_armed(count: int, problem: str | None, record_line: str) -> str:
-    """The morning note that the gap-fade scan is on."""
-    lines = ["*Gap-Fade Scan*", ""]
+def format_gap_armed(count: int, problem: str | None, record_line: str,
+                     for_label: str | None = None, top: list[str] | None = None) -> str:
+    """The note that the gap-fade scan is armed: tonight for tomorrow
+    (for_label set) or, as the fallback, this morning."""
+    title = f"*Gap-Fade Scan — ready for {for_label}*" if for_label else "*Gap-Fade Scan*"
+    lines = [title, ""]
     if problem or count == 0:
-        lines.append(f"⚠️ Not armed today: {problem or 'no stock passed the price/liquidity filters'}")
+        lines.append(f"⚠️ Not armed: {problem or 'no stock passed the price/liquidity filters'}")
     else:
+        if for_label:
+            intro = f"Built from today's close: watching {count} cheap, liquid stocks. Tomorrow at about 09:16"
+        else:
+            intro = f"Watching {count} cheap, liquid stocks. At about 09:16"
         lines.append(
-            f"Watching {count} cheap, liquid stocks. At about 09:16 I'll alert on opening gaps of "
-            f"{config.PENNY_GAP_MIN * 100:g}%+ (gap UP = SHORT, gap DOWN = BUY), at most {config.PENNY_MAX_ALERTS} "
-            f"alerts, with a {config.PENNY_TARGET_PCT * 100:g}% target and {config.PENNY_STOP_PCT * 100:g}% stop."
+            f"{intro} I'll alert on opening gaps of {config.PENNY_GAP_MIN * 100:g}%+ (gap UP = SHORT, gap DOWN = BUY), "
+            f"at most {config.PENNY_MAX_ALERTS} alerts, with a {config.PENNY_TARGET_PCT * 100:g}% target "
+            f"and {config.PENNY_STOP_PCT * 100:g}% stop."
         )
+        if for_label:
+            lines.append("Nothing to place tonight: the gap isn't known until the market opens.")
+        if top:
+            lines.append(f"Most liquid on the list: {', '.join(top)}")
     if record_line:
         lines += ["", record_line]
     return "\n".join(lines)

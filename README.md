@@ -205,8 +205,13 @@ known beforehand that predicts direction, but it did find that these stocks
 tend to **fade an opening gap** -- one that opens well above yesterday's close
 drops back, one that opens well below bounces. So:
 
-- **08:40-09:30, "Gap-Fade Scan" note.** The universe is built from yesterday's
-  whole-market NSE data (no Angel login) and today's scan is armed.
+- **From 18:00 the evening before, "Gap-Fade Scan - ready for <next trading
+  day>" note.** NSE publishes the day's data at about 16:35 IST, so the
+  universe is built from today's whole-market close (no Angel login) and saved
+  for the next trading day (skipping weekends and holidays). It checks every
+  5 minutes until the file is out, and gives up quietly at 22:00. If no
+  universe exists by the morning, it is built at 08:40-09:30 as a fallback.
+  Nothing needs placing that evening: the gap isn't known until the open.
 - **About 09:16, "Gap Alert".** A live stream reads every stock's open. A gap
   UP of 2-5% is a **SHORT** alert, a gap DOWN of 2-5% a **BUY** alert, at most
   3 alerts a day, the most liquid first. Each shows the open, the current

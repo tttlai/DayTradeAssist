@@ -101,9 +101,8 @@ def _default_state() -> dict:
         "sent_watchlist": False,
         "watchlist_failure_notified": False,
         "closed_notified": False,  # the one "market closed today" note has been sent
-        "penny_armed": False,  # gap-fade universe built for today
-        "penny_arm_attempts": 0,
-        "penny_universe": [],
+        "penny_arm_attempts": 0,  # failed morning arming attempts
+        "penny_evening_done": False,  # tonight's universe (for the next trading day) is built
         "penny_alerts": [],  # gap alerts sent today (reviewed after the close)
         "penny_review_done": False,
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
@@ -436,6 +435,7 @@ def _reset_day(now):
         _stop_stream()
         _stop_penny_stream()
         _monitor_close(force=True)
+        _penny["next_evening"] = None
         _monitor.update(
             date=today, last_poll=None, next_attempt=None, last_ok=None, last_full={}, last_sig={},
             stream_disabled=False, verified=set(), fast=False, last_source=None,
@@ -693,7 +693,10 @@ def _run_monitor(now):
 # from yesterday's whole-market data; a live stream reads every stock's open
 # right after 09:15 and the best-ranked gaps become alerts; after the close
 # each alert is replayed against real minute prices to log how it turned out.
-PENNY_ARM_START = dtime(8, 40)
+PENNY_EVENING_START = dtime(18, 0)  # NSE publishes the day's file at ~16:35 IST
+PENNY_EVENING_END = dtime(22, 0)
+PENNY_EVENING_RETRY_SECONDS = 300
+PENNY_ARM_START = dtime(8, 40)  # morning fallback if the evening build didn't happen
 PENNY_ARM_END = dtime(9, 30)
 PENNY_SCAN_START = dtime(9, 14)
 PENNY_ALERT_START = dtime(9, 16)
@@ -702,7 +705,34 @@ PENNY_REVIEW_START = dtime(15, 36)
 PENNY_REVIEW_END = dtime(17, 30)
 PENNY_ARM_ATTEMPTS = 3
 
-_penny = {"stream": None}
+_penny = {"stream": None, "next_evening": None}
+PENNY_UNIVERSE_FILE = config.PERSIST_DIR / "penny_universe.json"
+
+
+def _save_penny_universe(for_date: str, built_from: str, universe, problem):
+    PENNY_UNIVERSE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PENNY_UNIVERSE_FILE.write_text(json.dumps({
+        "for_date": for_date, "built_from": built_from, "problem": problem,
+        "stocks": [dataclasses.asdict(x) for x in universe],
+    }))
+
+
+def _load_penny_universe(for_date: str):
+    """The saved universe if it was built for exactly this trading day."""
+    try:
+        data = json.loads(PENNY_UNIVERSE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if data.get("for_date") == for_date else None
+
+
+def _next_trading_day(d):
+    d = d + timedelta(days=1)
+    for _ in range(14):
+        if timeutil.is_trading_day(d):
+            return d
+        d += timedelta(days=1)
+    return d
 
 
 def _stop_penny_stream():
@@ -715,34 +745,56 @@ def _stop_penny_stream():
             print(f"[penny] stream stop raised {e.__class__.__name__}: {e}")
 
 
-def run_penny_arm():
-    """Build today's gap-scan universe from yesterday's whole-market data.
-    No Angel login (scrip-master lookup only). Never raises."""
+def run_penny_arm(evening: bool = False) -> bool:
+    """Build the gap-scan universe from the latest whole-market NSE data (no
+    Angel login: scrip-master lookup only) and save it for its trading day.
+    evening=True builds tomorrow's right after NSE publishes today's file
+    (~16:35 IST); otherwise it is the morning fallback for today. Returns
+    True once a universe was saved. Never raises."""
     try:
+        now = timeutil.now_ist()
+        today = now.date()
+        target = _next_trading_day(today) if evening else today
         state = load_full_state()
-        state["penny_arm_attempts"] = state.get("penny_arm_attempts", 0) + 1
         universe, problem = [], None
         try:
+            if evening and nse_data.fetch_bhavcopy_for_date(today) is None:
+                return False  # today's file isn't out yet: try again shortly
             history = nse_data.fetch_daily_history(None, days=30)
+            latest = max((c[-1][0] for c in history.values() if c), default="")
+            if evening and latest != today.isoformat():
+                return False
             tokens = AngelAPI().get_tokens(history.keys())
             universe = penny.build_universe(history, tokens)
         except nse_data.NSEUnavailable as e:
             problem = f"NSE data unavailable ({e})"
         except Exception as e:
             problem = f"{e.__class__.__name__}: {e}"
-        if problem and state["penny_arm_attempts"] < PENNY_ARM_ATTEMPTS:
-            print(f"[penny] arming attempt {state['penny_arm_attempts']} failed ({problem}); will retry")
+        if problem:
+            if evening:
+                print(f"[penny] evening arming failed ({problem}); will retry")
+                return False
+            state["penny_arm_attempts"] = state.get("penny_arm_attempts", 0) + 1
+            if state["penny_arm_attempts"] < PENNY_ARM_ATTEMPTS:
+                print(f"[penny] arming attempt {state['penny_arm_attempts']} failed ({problem}); will retry")
+                save_full_state(state)
+                return False
+        _save_penny_universe(target.isoformat(), today.isoformat() if evening else "yesterday", universe, problem)
+        if evening:
+            state["penny_evening_done"] = True
             save_full_state(state)
-            return
-        state["penny_armed"] = True
-        state["penny_universe"] = [dataclasses.asdict(s) for s in universe]
-        save_full_state(state)
-        print(f"[penny] armed with {len(universe)} stocks" + (f" (problem: {problem})" if problem else ""))
+        print(f"[penny] armed {len(universe)} stocks for {target}" + (f" (problem: {problem})" if problem else ""))
+        top = [x.symbol for x in sorted(universe, key=lambda x: x.avg_value_20, reverse=True)[:10]]
         notify.send_message(
-            report.format_gap_armed(len(universe), problem, penny.stats_line(store.read_records("penny_results.jsonl")))
+            report.format_gap_armed(
+                len(universe), problem, penny.stats_line(store.read_records("penny_results.jsonl")),
+                for_label=target.strftime("%a %d %b") if evening else None, top=top if evening else None,
+            )
         )
+        return True
     except Exception as e:
         print(f"[penny] arming raised {e.__class__.__name__}: {e}")
+        return False
 
 
 def run_penny_scan():
@@ -759,10 +811,9 @@ def _run_penny_scan():
     now = timeutil.now_ist()
     t = now.time()
     state = load_full_state()
-    universe = [penny.PennyStock(**u) for u in state.get("penny_universe", [])]
-    active = bool(
-        config.PENNY_ENABLED and state.get("penny_armed") and universe and PENNY_SCAN_START <= t <= PENNY_SCAN_END
-    )
+    saved = _load_penny_universe(now.date().isoformat())
+    universe = [penny.PennyStock(**u) for u in (saved or {}).get("stocks", [])]
+    active = bool(config.PENNY_ENABLED and universe and PENNY_SCAN_START <= t <= PENNY_SCAN_END)
     if not active:
         if _penny["stream"] is not None:
             _stop_penny_stream()
@@ -869,10 +920,11 @@ def penny_status_text() -> str:
     lines = ["Gap-fade status", ""]
     if not config.PENNY_ENABLED:
         lines.append("Disabled (set PENNY_ENABLED=true to turn it on).")
-    elif not state.get("penny_armed"):
-        lines.append("Not armed yet today (it arms between 08:40 and 09:30 on trading days).")
+    elif _load_penny_universe(timeutil.now_ist().date().isoformat()) is None:
+        lines.append("Not armed for today (it arms at 18:00 the evening before, or 08:40-09:30 as a fallback).")
     else:
-        lines.append(f"Armed today with {len(state.get('penny_universe', []))} stocks.")
+        saved = _load_penny_universe(timeutil.now_ist().date().isoformat())
+        lines.append(f"Armed for today with {len(saved['stocks'])} stocks (built from {saved['built_from']}'s data).")
         alerts = state.get("penny_alerts", [])
         lines.append(f"Alerts sent today: {len(alerts)}" + (": " + ", ".join(f"{a['symbol']} {a['direction']}" for a in alerts) if alerts else ""))
     lines += ["", penny.stats_text(store.read_records("penny_results.jsonl"))]
@@ -1197,12 +1249,12 @@ def run_auto():
 
     if (
         config.PENNY_ENABLED
-        and not state.get("penny_armed")
         and PENNY_ARM_START <= t <= PENNY_ARM_END
         and (state.get("sent_watchlist") or t > WATCHLIST_WINDOW[1])
+        and _load_penny_universe(now.date().isoformat()) is None
     ):
-        print(f"[auto] {t} IST - arming the gap-fade scan")
-        run_penny_arm()
+        print(f"[auto] {t} IST - no gap-fade universe from last evening, arming now")
+        run_penny_arm(evening=False)
         return
 
     checks_done = state.get("confirm_checks_done", [])
@@ -1273,6 +1325,17 @@ def run_auto():
         )
         state["sent_eval"] = True
         save_full_state(state)
+        return
+
+    if (
+        config.PENNY_ENABLED
+        and PENNY_EVENING_START <= t <= PENNY_EVENING_END
+        and not state.get("penny_evening_done")
+        and (_penny["next_evening"] is None or now >= _penny["next_evening"])
+    ):
+        _penny["next_evening"] = now + timedelta(seconds=PENNY_EVENING_RETRY_SECONDS)
+        print(f"[auto] {t} IST - building tomorrow's gap-fade universe")
+        run_penny_arm(evening=True)
         return
 
     print(f"[auto] {t} IST - nothing to do (outside windows or already sent today)")
