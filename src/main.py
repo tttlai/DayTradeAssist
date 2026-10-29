@@ -791,10 +791,10 @@ def run_penny_arm(evening: bool = False) -> bool:
             report.format_gap_armed(
                 len(universe), problem, penny.stats_line(store.read_records("penny_results.jsonl")),
                 for_label=target.strftime("%a %d %b") if evening else None,
-                sheet=penny.order_rows(universe)[:15] if evening else None,
+                sheet=penny.order_rows(universe)[:15],
             )
         )
-        if evening and universe:
+        if universe:
             notify.send_document(
                 f"gap_scan_for_{target.isoformat()}.csv", penny.sheet_csv(universe).encode("utf-8"),
                 caption=f"Full gap-fade order sheet for {target.strftime('%a %d %b')} ({len(universe)} stocks)",
