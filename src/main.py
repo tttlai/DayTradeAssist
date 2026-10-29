@@ -435,7 +435,7 @@ def _reset_day(now):
         _stop_stream()
         _stop_penny_stream()
         _monitor_close(force=True)
-        _penny["next_evening"] = None
+        _penny.update(next_evening=None, probed=set(), preopen_sent=False, flagged=set())
         _monitor.update(
             date=today, last_poll=None, next_attempt=None, last_ok=None, last_full={}, last_sig={},
             stream_disabled=False, verified=set(), fast=False, last_source=None,
@@ -698,14 +698,17 @@ PENNY_EVENING_END = dtime(22, 0)
 PENNY_EVENING_RETRY_SECONDS = 300
 PENNY_ARM_START = dtime(8, 40)  # morning fallback if the evening build didn't happen
 PENNY_ARM_END = dtime(9, 30)
-PENNY_SCAN_START = dtime(9, 14)
-PENNY_ALERT_START = dtime(9, 16)
+PENNY_SCAN_START = dtime(9, 0)  # pre-open: the feed is up before the market opens
+PENNY_PREOPEN_ALERT = dtime(9, 10, 30)  # indicative equilibrium prices are set at 09:08
+PENNY_PROBE_SLOTS = [dtime(9, 2), dtime(9, 6), dtime(9, 10), dtime(9, 14)]
+PENNY_PROBE_TOP = 60  # stocks recorded per probe slot
+PENNY_ALERT_START = dtime(9, 15, 30)
 PENNY_SCAN_END = dtime(9, 35)
 PENNY_REVIEW_START = dtime(15, 36)
 PENNY_REVIEW_END = dtime(17, 30)
 PENNY_ARM_ATTEMPTS = 3
 
-_penny = {"stream": None, "next_evening": None}
+_penny = {"stream": None, "next_evening": None, "probed": set(), "preopen_sent": False, "flagged": set()}
 PENNY_UNIVERSE_FILE = config.PERSIST_DIR / "penny_universe.json"
 
 
@@ -784,13 +787,18 @@ def run_penny_arm(evening: bool = False) -> bool:
             state["penny_evening_done"] = True
             save_full_state(state)
         print(f"[penny] armed {len(universe)} stocks for {target}" + (f" (problem: {problem})" if problem else ""))
-        top = [x.symbol for x in sorted(universe, key=lambda x: x.avg_value_20, reverse=True)[:10]]
         notify.send_message(
             report.format_gap_armed(
                 len(universe), problem, penny.stats_line(store.read_records("penny_results.jsonl")),
-                for_label=target.strftime("%a %d %b") if evening else None, top=top if evening else None,
+                for_label=target.strftime("%a %d %b") if evening else None,
+                sheet=penny.order_rows(universe)[:15] if evening else None,
             )
         )
+        if evening and universe:
+            notify.send_document(
+                f"gap_scan_for_{target.isoformat()}.csv", penny.sheet_csv(universe).encode("utf-8"),
+                caption=f"Full gap-fade order sheet for {target.strftime('%a %d %b')} ({len(universe)} stocks)",
+            )
         return True
     except Exception as e:
         print(f"[penny] arming raised {e.__class__.__name__}: {e}")
@@ -836,8 +844,11 @@ def _run_penny_scan():
         return
 
     st = _penny["stream"]
+    if t < PENNY_ALERT_START:
+        _penny_preopen(now, st, universe)  # record what the feed shows pre-open; maybe a heads-up
+        return
     already = {a["symbol"] for a in state.get("penny_alerts", [])}
-    if t < PENNY_ALERT_START or len(already) >= config.PENNY_MAX_ALERTS or not st.is_healthy(now):
+    if len(already) >= config.PENNY_MAX_ALERTS or not st.is_healthy(now):
         return
     candidates = []
     for stock in universe:
@@ -852,6 +863,8 @@ def _run_penny_scan():
     fresh = penny.pick_alerts(candidates, already)
     if not fresh:
         return
+    for a in fresh:
+        a["preflagged"] = a["symbol"] in _penny["flagged"]
 
     hhmm = now.strftime("%H:%M")
     state = load_full_state()
@@ -865,6 +878,49 @@ def _run_penny_scan():
         )
     print(f"[penny] {hhmm}: alerting {', '.join(a['symbol'] + ' ' + a['direction'] for a in fresh)}")
     notify.send_message(report.format_gap_alerts(fresh, hhmm))
+
+
+def _penny_preopen(now, st, universe):
+    """Before 09:15: (1) record what the live feed shows for the most liquid
+    names at a few moments, so we can tell whether it carries NSE's indicative
+    pre-open prices at all; (2) if it does, send one heads-up at ~09:10 about
+    gaps the indicative prices imply. Silent when the feed shows nothing."""
+    t = now.time()
+    date_s = now.strftime("%Y-%m-%d")
+    top = sorted(universe, key=lambda x: x.avg_value_20, reverse=True)[:PENNY_PROBE_TOP]
+    for slot in PENNY_PROBE_SLOTS:
+        label = slot.strftime("%H:%M")
+        if t >= slot and label not in _penny["probed"]:
+            _penny["probed"].add(label)
+            rows = []
+            for stock in top:
+                snap = st.snapshot(stock.token, now=now)
+                if snap is not None:
+                    rows.append({"symbol": stock.symbol, "ltp": snap.ltp, "open": snap.day_open,
+                                 "prev_close": snap.prev_close, "volume": snap.volume})
+            store.append_record("penny_preopen.jsonl", {
+                "date": date_s, "slot": label, "at": now.strftime("%H:%M:%S"),
+                "stocks_with_ticks": len(rows), "universe": len(universe), "rows": rows,
+            })
+    if config.PENNY_PREOPEN and t >= PENNY_PREOPEN_ALERT and not _penny["preopen_sent"]:
+        _penny["preopen_sent"] = True
+        candidates = []
+        for stock in universe:
+            snap = st.snapshot(stock.token, now=now)
+            if snap is None or not snap.prev_close:
+                continue
+            alert = penny.evaluate_open(stock, snap.ltp, snap.ltp, snap.prev_close)  # indicative price as the "open"
+            if alert:
+                candidates.append(alert)
+        picks = penny.pick_alerts(candidates, set())
+        if picks:
+            _penny["flagged"] = {a["symbol"] for a in picks}
+            store.append_record("penny_preopen.jsonl", {
+                "date": date_s, "slot": "headsup", "at": now.strftime("%H:%M:%S"),
+                "picks": [{"symbol": a["symbol"], "direction": a["direction"], "gap_pct": a["gap_pct"]} for a in picks],
+            })
+            print(f"[penny] pre-open heads-up: {', '.join(a['symbol'] + ' ' + a['direction'] for a in picks)}")
+            notify.send_message(report.format_gap_preopen(picks, now.strftime("%H:%M")))
 
 
 def run_penny_review():

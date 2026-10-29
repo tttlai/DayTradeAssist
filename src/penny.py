@@ -170,3 +170,32 @@ def stats_text(results: list[dict]) -> str:
             f"{str(r.get('outcome')).replace('_', ' ')} {pct}"
         )
     return "\n".join(lines)
+
+
+def order_rows(universe: list[PennyStock]) -> list[dict]:
+    """The evening order sheet: for each stock, the opening-price levels that
+    would make it a SELL (short) or BUY, most liquid first. Direction is
+    unknowable the evening before, so each stock carries BOTH conditions."""
+    rows = []
+    for s in sorted(universe, key=lambda x: x.avg_value_20, reverse=True):
+        rows.append({
+            "symbol": s.symbol,
+            "prev_close": round(s.last_close, 2),
+            "value_cr": round(s.avg_value_20 / 1e7, 1),
+            "sell_if_open_at_or_above": round_tick(s.last_close * (1 + config.PENNY_GAP_MIN)) if config.PENNY_ALLOW_SHORTS else None,
+            "buy_if_open_at_or_below": round_tick(s.last_close * (1 - config.PENNY_GAP_MIN)),
+            "skip_if_open_above": round_tick(s.last_close * (1 + config.PENNY_GAP_MAX)),
+            "skip_if_open_below": round_tick(s.last_close * (1 - config.PENNY_GAP_MAX)),
+        })
+    return rows
+
+
+def sheet_csv(universe: list[PennyStock]) -> str:
+    """The full order sheet as CSV text (for the Telegram attachment)."""
+    rows = order_rows(universe)
+    cols = ["symbol", "prev_close", "value_cr", "sell_if_open_at_or_above", "buy_if_open_at_or_below",
+            "skip_if_open_above", "skip_if_open_below"]
+    lines = [",".join(cols)]
+    for r in rows:
+        lines.append(",".join("" if r[c] is None else str(r[c]) for c in cols))
+    return "\n".join(lines) + "\n"

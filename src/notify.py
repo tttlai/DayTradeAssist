@@ -54,3 +54,22 @@ def send_message(text: str):
                     print(f"[notify] plain-text retry also failed: {retry_resp.status_code} {retry_resp.text}")
     except requests.RequestException as e:
         print(f"[notify] Telegram send raised {e.__class__.__name__}: {e}")
+
+
+def send_document(filename: str, content: bytes, caption: str = ""):
+    """Send a file to the Telegram chat. Never raises (same reason as
+    send_message): a failed attachment must not break the phase that sent it."""
+    if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
+        print(f"[notify] Telegram not configured; would have sent {filename} ({len(content)} bytes)")
+        return
+    try:
+        resp = requests.post(
+            f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendDocument",
+            data={"chat_id": config.TELEGRAM_CHAT_ID, "caption": caption},
+            files={"document": (filename, content)},
+            timeout=30,
+        )
+        if not resp.ok:
+            print(f"[notify] Telegram sendDocument failed: {resp.status_code} {resp.text}")
+    except requests.RequestException as e:
+        print(f"[notify] Telegram sendDocument raised {e.__class__.__name__}: {e}")

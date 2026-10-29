@@ -112,29 +112,51 @@ def format_new_triggers(plans, check_time: str) -> str:
 
 
 def format_gap_armed(count: int, problem: str | None, record_line: str,
-                     for_label: str | None = None, top: list[str] | None = None) -> str:
+                     for_label: str | None = None, sheet: list[dict] | None = None) -> str:
     """The note that the gap-fade scan is armed: tonight for tomorrow
-    (for_label set) or, as the fallback, this morning."""
+    (for_label set) or, as the fallback, this morning. In the evening version
+    `sheet` (penny.order_rows) becomes a ready-to-use order sheet."""
     title = f"*Gap-Fade Scan — ready for {for_label}*" if for_label else "*Gap-Fade Scan*"
     lines = [title, ""]
     if problem or count == 0:
         lines.append(f"⚠️ Not armed: {problem or 'no stock passed the price/liquidity filters'}")
     else:
         if for_label:
-            intro = f"Built from today's close: watching {count} cheap, liquid stocks. Tomorrow at about 09:16"
+            intro = f"Built from today's close: watching {count} cheap, liquid stocks. Tomorrow at about 09:15"
         else:
-            intro = f"Watching {count} cheap, liquid stocks. At about 09:16"
+            intro = f"Watching {count} cheap, liquid stocks. At about 09:15"
         lines.append(
             f"{intro} I'll alert on opening gaps of {config.PENNY_GAP_MIN * 100:g}%+ (gap UP = SHORT, gap DOWN = BUY), "
             f"at most {config.PENNY_MAX_ALERTS} alerts, with a {config.PENNY_TARGET_PCT * 100:g}% target "
             f"and {config.PENNY_STOP_PCT * 100:g}% stop."
         )
         if for_label:
-            lines.append("Nothing to place tonight: the gap isn't known until the market opens.")
-        if top:
-            lines.append(f"Most liquid on the list: {', '.join(top)}")
+            lines.append("Nothing to place tonight: the direction isn't known until the market opens.")
+        if sheet:
+            lines += ["", "*Order sheet* — whichever way a stock OPENS decides (skip it if it opens beyond "
+                      f"{config.PENNY_GAP_MAX * 100:g}% either way). Most liquid first:"]
+            for r in sheet:
+                sell = f"SELL if open >= {r['sell_if_open_at_or_above']}" if r["sell_if_open_at_or_above"] is not None else "no sell"
+                lines.append(f"{r['symbol']}: prev {r['prev_close']} | {sell} | BUY if open <= {r['buy_if_open_at_or_below']}")
+            lines.append(f"(top {len(sheet)} of {count}; the full list is attached as a file)")
     if record_line:
         lines += ["", record_line]
+    return "\n".join(lines)
+
+
+def format_gap_preopen(alerts, hhmm: str) -> str:
+    """Heads-up from NSE's indicative pre-open prices, ahead of the real open."""
+    lines = [f"*Pre-Open Heads-Up — {hhmm} IST*", ""]
+    lines.append("Indicative opening prices (NOT final) point to these gap-fade setups:")
+    lines.append("")
+    for a in alerts:
+        arrow = "🔴 SHORT" if a["direction"] == "SHORT" else "🟢 BUY"
+        lines.append(
+            f"{arrow} *{a['symbol']}* — indicative open {a['gap_pct']:+.1f}% vs yesterday's close "
+            f"(₹{a['prev_close']} → ₹{a['open']})"
+        )
+    lines += ["", "The real 09:15 open decides: you'll get the official alert right after it. "
+              "Use this time to have the order screen ready.", "_Experimental: pre-open prices can move at the open._"]
     return "\n".join(lines)
 
 
@@ -152,6 +174,8 @@ def format_gap_alerts(alerts, hhmm: str) -> str:
             f"Stop ₹{a['stop']} ({stop_sign}{config.PENNY_STOP_PCT * 100:g}%) | "
             f"Qty {a['quantity']} (about ₹{a['quantity'] * a['ltp']:,.0f})"
         )
+        if a.get("preflagged"):
+            lines.append("  ✔ also flagged in the pre-open heads-up")
         if a.get("large_gap"):
             lines.append("  ⚠️ _gap over 5% — often news-driven, higher risk_")
         lines.append("")

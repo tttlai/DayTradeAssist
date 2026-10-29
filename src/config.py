@@ -91,6 +91,10 @@ PENNY_STOP_PCT = _get_float("PENNY_STOP_PCT", 0.02)
 PENNY_MAX_ALERTS = _get_int("PENNY_MAX_ALERTS", 3)  # per day
 PENNY_MAX_DRIFT = _get_float("PENNY_MAX_DRIFT", 0.01)  # skip if already >1% off the open when seen
 PENNY_ALLOW_SHORTS = _get_bool("PENNY_ALLOW_SHORTS", True)
+# Heads-up around 09:10 from NSE's indicative pre-open prices, if Angel's feed
+# carries them (experimental: what the feed shows before 09:15 is also recorded
+# to penny_preopen.jsonl so we can check). Set false to skip the heads-up.
+PENNY_PREOPEN = _get_bool("PENNY_PREOPEN", True)
 PENNY_BUDGET = _get_float("PENNY_BUDGET", MAX_BUDGET)  # split evenly across PENNY_MAX_ALERTS
 
 # Don't enter once price is already more than this many ATRs past the

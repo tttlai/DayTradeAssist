@@ -211,8 +211,20 @@ drops back, one that opens well below bounces. So:
   for the next trading day (skipping weekends and holidays). It checks every
   5 minutes until the file is out, and gives up quietly at 22:00. If no
   universe exists by the morning, it is built at 08:40-09:30 as a fallback.
-  Nothing needs placing that evening: the gap isn't known until the open.
-- **About 09:16, "Gap Alert".** A live stream reads every stock's open. A gap
+  Nothing needs placing that evening: the direction isn't known until the
+  open. The note carries an **order sheet** for the 15 most liquid stocks
+  ("SELL if open >= X | BUY if open <= Y", with the skip-beyond levels) and the
+  **full list is attached as a CSV**, so the decision at 09:15 is a glance, not
+  a calculation. Whichever way each stock opens picks its side.
+- **09:00-09:15, pre-open probe and heads-up.** The stream is up from 09:00.
+  NSE sets indicative opening prices at 09:08; if Angel's feed carries them, a
+  **Pre-Open Heads-Up** at about 09:10 names the likely gap-fade setups five
+  minutes before the open (the official alert then marks which were already
+  flagged). Whether the feed really shows pre-open prices is unverified, so
+  what it shows for the 60 most liquid names is recorded at 09:02, 09:06,
+  09:10 and 09:14 to `penny_preopen.jsonl`; the heads-up simply stays silent if
+  the feed shows nothing. `PENNY_PREOPEN=false` turns the heads-up off.
+- **From 09:15:30, "Gap Alert".** A live stream reads every stock's open. A gap
   UP of 2-5% is a **SHORT** alert, a gap DOWN of 2-5% a **BUY** alert, at most
   3 alerts a day, the most liquid first. Each shows the open, the current
   price, a **3% target and 2% stop** (exit at those levels, not at the close;
