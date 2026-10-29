@@ -56,7 +56,7 @@ import json
 import time
 from datetime import time as dtime, timedelta
 
-from . import config, eval_agent, github_pr, health, notify, nse_data, report, screener, store, stream, strategy, telegram_commands, timeutil, tradepath, tradesim
+from . import config, eval_agent, github_pr, health, notify, nse_data, penny, report, screener, store, stream, strategy, telegram_commands, timeutil, tradepath, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
@@ -101,6 +101,11 @@ def _default_state() -> dict:
         "sent_watchlist": False,
         "watchlist_failure_notified": False,
         "closed_notified": False,  # the one "market closed today" note has been sent
+        "penny_armed": False,  # gap-fade universe built for today
+        "penny_arm_attempts": 0,
+        "penny_universe": [],
+        "penny_alerts": [],  # gap alerts sent today (reviewed after the close)
+        "penny_review_done": False,
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "gate_log": [],  # per-window, per-stock confirmation gate results, reused by run_eval()
         "sent_summary": False,
@@ -187,6 +192,8 @@ def handle_commands():
             github_pr.close_pr(pending["pr_number"])
             notify.send_message(f"Dismissed — *{pending['param']}* suggestion rejected, PR closed.")
             clear_pending_suggestion()
+        elif cmd == "/penny":
+            notify.send_message(penny_status_text())
         elif cmd == "/stream":
             notify.send_message(stream_status_text())
         elif cmd == "/stats":
@@ -200,7 +207,7 @@ def handle_commands():
                 "Angel One + Railway status."
             )
         else:
-            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats, /stream")
+            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats, /stream, /penny")
 
     if new_last_id != last_id:
         _save_last_update_id(new_last_id)
@@ -397,8 +404,8 @@ def _get_session():
 
 
 def _monitor_close(force=False):
-    if _monitor["stream"] is not None and not force:
-        return  # the stream still needs this login
+    if (_monitor["stream"] is not None or _penny["stream"] is not None) and not force:
+        return  # a live stream still needs this login
     api = _monitor["api"]
     _monitor["api"] = None
     if api is not None:
@@ -427,6 +434,7 @@ def _reset_day(now):
     today = now.strftime("%Y-%m-%d")
     if _monitor["date"] != today:
         _stop_stream()
+        _stop_penny_stream()
         _monitor_close(force=True)
         _monitor.update(
             date=today, last_poll=None, next_attempt=None, last_ok=None, last_full={}, last_sig={},
@@ -678,6 +686,197 @@ def _run_monitor(now):
     if new_triggers:
         print(f"[monitor] {hhmm}: new trigger(s): {', '.join(p.symbol for p in new_triggers)}")
         notify.send_message(report.format_new_triggers(new_triggers, hhmm))
+
+
+# --- Opening-gap fade alerts (src/penny.py) -------------------------------
+# Cheap stocks tend to fade an opening gap. Each morning the universe is armed
+# from yesterday's whole-market data; a live stream reads every stock's open
+# right after 09:15 and the best-ranked gaps become alerts; after the close
+# each alert is replayed against real minute prices to log how it turned out.
+PENNY_ARM_START = dtime(8, 40)
+PENNY_ARM_END = dtime(9, 30)
+PENNY_SCAN_START = dtime(9, 14)
+PENNY_ALERT_START = dtime(9, 16)
+PENNY_SCAN_END = dtime(9, 35)
+PENNY_REVIEW_START = dtime(15, 36)
+PENNY_REVIEW_END = dtime(17, 30)
+PENNY_ARM_ATTEMPTS = 3
+
+_penny = {"stream": None}
+
+
+def _stop_penny_stream():
+    st = _penny["stream"]
+    _penny["stream"] = None
+    if st is not None:
+        try:
+            st.stop()
+        except Exception as e:
+            print(f"[penny] stream stop raised {e.__class__.__name__}: {e}")
+
+
+def run_penny_arm():
+    """Build today's gap-scan universe from yesterday's whole-market data.
+    No Angel login (scrip-master lookup only). Never raises."""
+    try:
+        state = load_full_state()
+        state["penny_arm_attempts"] = state.get("penny_arm_attempts", 0) + 1
+        universe, problem = [], None
+        try:
+            history = nse_data.fetch_daily_history(None, days=30)
+            tokens = AngelAPI().get_tokens(history.keys())
+            universe = penny.build_universe(history, tokens)
+        except nse_data.NSEUnavailable as e:
+            problem = f"NSE data unavailable ({e})"
+        except Exception as e:
+            problem = f"{e.__class__.__name__}: {e}"
+        if problem and state["penny_arm_attempts"] < PENNY_ARM_ATTEMPTS:
+            print(f"[penny] arming attempt {state['penny_arm_attempts']} failed ({problem}); will retry")
+            save_full_state(state)
+            return
+        state["penny_armed"] = True
+        state["penny_universe"] = [dataclasses.asdict(s) for s in universe]
+        save_full_state(state)
+        print(f"[penny] armed with {len(universe)} stocks" + (f" (problem: {problem})" if problem else ""))
+        notify.send_message(
+            report.format_gap_armed(len(universe), problem, penny.stats_line(store.read_records("penny_results.jsonl")))
+        )
+    except Exception as e:
+        print(f"[penny] arming raised {e.__class__.__name__}: {e}")
+
+
+def run_penny_scan():
+    """Called every loop tick. Streams the universe around the open and sends
+    gap alerts. Never raises; any failure just means no alert this tick."""
+    try:
+        _run_penny_scan()
+    except Exception as e:
+        print(f"[penny] scan raised {e.__class__.__name__}: {e}")
+        _monitor["next_attempt"] = timeutil.now_ist() + timedelta(seconds=MONITOR_RETRY_SECONDS)
+
+
+def _run_penny_scan():
+    now = timeutil.now_ist()
+    t = now.time()
+    state = load_full_state()
+    universe = [penny.PennyStock(**u) for u in state.get("penny_universe", [])]
+    active = bool(
+        config.PENNY_ENABLED and state.get("penny_armed") and universe and PENNY_SCAN_START <= t <= PENNY_SCAN_END
+    )
+    if not active:
+        if _penny["stream"] is not None:
+            _stop_penny_stream()
+            print("[penny] stream stopped")
+            if t > MONITOR_END:
+                _monitor_close()
+        return
+
+    if _penny["stream"] is None:
+        if _monitor["next_attempt"] and now < _monitor["next_attempt"]:
+            return
+        api = _get_session()  # shared login; raises -> run_penny_scan() backs off
+        client = stream.StreamClient(
+            config.ANGEL_API_KEY, config.ANGEL_CLIENT_CODE, api.auth_token, api.feed_token,
+            {s.token: s.symbol for s in universe}, record_candles=False,
+        )
+        client.start()
+        _penny["stream"] = client
+        print(f"[penny] streaming {len(universe)} stocks to read the opening gaps")
+        return
+
+    st = _penny["stream"]
+    already = {a["symbol"] for a in state.get("penny_alerts", [])}
+    if t < PENNY_ALERT_START or len(already) >= config.PENNY_MAX_ALERTS or not st.is_healthy(now):
+        return
+    candidates = []
+    for stock in universe:
+        if stock.symbol in already:
+            continue
+        snap = st.snapshot(stock.token, now=now)
+        if snap is None or snap.day_open is None:
+            continue
+        alert = penny.evaluate_open(stock, snap.day_open, snap.ltp, snap.prev_close)
+        if alert:
+            candidates.append(alert)
+    fresh = penny.pick_alerts(candidates, already)
+    if not fresh:
+        return
+
+    hhmm = now.strftime("%H:%M")
+    state = load_full_state()
+    trade_date = state.get("date") or _today_key()
+    state["penny_alerts"] = state.get("penny_alerts", []) + [{**a, "alerted_at": hhmm} for a in fresh]
+    save_full_state(state)
+    for a in fresh:
+        store.append_record(
+            "penny_alerts.jsonl", {"date": trade_date, "alerted_at": hhmm, **{k: v for k, v in a.items() if k != "rank"}},
+            key=("date", "symbol"),
+        )
+    print(f"[penny] {hhmm}: alerting {', '.join(a['symbol'] + ' ' + a['direction'] for a in fresh)}")
+    notify.send_message(report.format_gap_alerts(fresh, hhmm))
+
+
+def run_penny_review():
+    """After the close: replay each gap alert against real one-minute prices
+    to see whether the target or the stop was hit, and keep the result. Never
+    raises; always marks itself done so it can't loop."""
+    state = load_full_state()
+    try:
+        alerts = state.get("penny_alerts", [])
+        trade_date = state.get("date") or _today_key()
+        if alerts:
+            api = AngelAPI()
+            api.login()
+            try:
+                results = []
+                for a in alerts:
+                    result = {
+                        "date": trade_date, "symbol": a["symbol"], "direction": a["direction"], "gap_pct": a["gap_pct"],
+                        "entry": a["ltp"], "quantity": a["quantity"], "stop": a["stop"], "target": a["target"],
+                        "alerted_at": a["alerted_at"], "exit": None, "outcome": "UNKNOWN", "pnl": None, "pct": None,
+                    }
+                    try:
+                        candles = api.get_intraday_candles(a["token"], interval="ONE_MINUTE")
+                        relevant = [
+                            c for c in candles
+                            if a["alerted_at"] <= timeutil.candle_time_str(c[0]) <= config.SQUARE_OFF_TIME
+                        ]
+                        if relevant:
+                            side = "LONG" if a["direction"] == "BUY" else "SHORT"
+                            sim = tradesim.walk_candles(relevant, side, a["stop"], a["target"])
+                            pnl = tradesim.pnl(side, a["ltp"], sim.exit_price, a["quantity"])
+                            result.update(
+                                exit=sim.exit_price, outcome=sim.outcome, pnl=round(pnl, 2),
+                                pct=round(pnl / (a["ltp"] * a["quantity"]) * 100, 2),
+                            )
+                    except Exception as e:
+                        print(f"[penny] review of {a['symbol']} failed: {e.__class__.__name__}: {e}")
+                    store.append_record("penny_results.jsonl", result, key=("date", "symbol"))
+                    results.append(result)
+                notify.send_message(report.format_gap_review(results))
+            finally:
+                api.logout()
+    except Exception as e:
+        print(f"[penny] review raised {e.__class__.__name__}: {e}")
+    state = load_full_state()
+    state["penny_review_done"] = True
+    save_full_state(state)
+
+
+def penny_status_text() -> str:
+    """Plain-text answer to /penny."""
+    state = load_full_state()
+    lines = ["Gap-fade status", ""]
+    if not config.PENNY_ENABLED:
+        lines.append("Disabled (set PENNY_ENABLED=true to turn it on).")
+    elif not state.get("penny_armed"):
+        lines.append("Not armed yet today (it arms between 08:40 and 09:30 on trading days).")
+    else:
+        lines.append(f"Armed today with {len(state.get('penny_universe', []))} stocks.")
+        alerts = state.get("penny_alerts", [])
+        lines.append(f"Alerts sent today: {len(alerts)}" + (": " + ", ".join(f"{a['symbol']} {a['direction']}" for a in alerts) if alerts else ""))
+    lines += ["", penny.stats_text(store.read_records("penny_results.jsonl"))]
+    return "\n".join(lines)
 
 
 def run_summary():
@@ -967,6 +1166,7 @@ def run_auto():
         print(f"[auto] {now.date()} is not a trading day -- nothing to do")
         return
 
+    run_penny_scan()
     run_monitor()
 
     t = now.time()
@@ -994,6 +1194,16 @@ def run_auto():
         )
         state["watchlist_failure_notified"] = True
         save_full_state(state)
+
+    if (
+        config.PENNY_ENABLED
+        and not state.get("penny_armed")
+        and PENNY_ARM_START <= t <= PENNY_ARM_END
+        and (state.get("sent_watchlist") or t > WATCHLIST_WINDOW[1])
+    ):
+        print(f"[auto] {t} IST - arming the gap-fade scan")
+        run_penny_arm()
+        return
 
     checks_done = state.get("confirm_checks_done", [])
     for key, start, end in CONFIRM_WINDOWS:
@@ -1037,6 +1247,16 @@ def run_auto():
         save_full_state(state)
         return
 
+    if (
+        config.PENNY_ENABLED
+        and PENNY_REVIEW_START <= t <= PENNY_REVIEW_END
+        and state.get("penny_alerts")
+        and not state.get("penny_review_done")
+    ):
+        print(f"[auto] {t} IST - reviewing today's gap alerts")
+        run_penny_review()
+        return
+
     if EVAL_WINDOW[0] <= t <= EVAL_WINDOW[1] and state.get("sent_summary") and not state.get("sent_eval"):
         print(f"[auto] {t} IST in eval window, not yet sent -> running eval")
         run_eval()
@@ -1063,10 +1283,11 @@ def _wait_for_next_tick():
     running, wake early when a watched stock newly crosses its trigger (and
     loop more often while watching)."""
     st = _monitor["stream"]
+    penny_active = _penny["stream"] is not None
     if st is None or not st.running:
-        time.sleep(LOOP_INTERVAL_SECONDS)
+        time.sleep(STREAM_LOOP_SECONDS if penny_active else LOOP_INTERVAL_SECONDS)
         return
-    st.wake.wait(STREAM_LOOP_SECONDS if _monitor["fast"] else LOOP_INTERVAL_SECONDS)
+    st.wake.wait(STREAM_LOOP_SECONDS if (_monitor["fast"] or penny_active) else LOOP_INTERVAL_SECONDS)
     st.wake.clear()
     time.sleep(1)  # never spin
 

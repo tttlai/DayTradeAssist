@@ -78,8 +78,11 @@ def parse_tick(data: dict, now: datetime) -> Snapshot | None:
 
 class StreamClient:
     def __init__(self, api_key, client_code, auth_token, feed_token, symbols: dict[str, str],
-                 ws_factory=None, backoff_start=RECONNECT_BACKOFF_START):
-        """symbols: {instrument token: trading symbol} to subscribe to."""
+                 ws_factory=None, backoff_start=RECONNECT_BACKOFF_START, record_candles=True):
+        """symbols: {instrument token: trading symbol} to subscribe to.
+        record_candles=False skips building/saving minute candles (used for
+        the wide gap-scan subscription, where only prices matter)."""
+        self.record_candles = record_candles
         self.api_key, self.client_code = api_key, client_code
         self.auth_token, self.feed_token = auth_token, feed_token
         self.symbols = dict(symbols)
@@ -235,6 +238,8 @@ class StreamClient:
 
     # ---- one-minute candles ----------------------------------------------
     def _update_bar(self, snap: Snapshot):
+        if not self.record_candles:
+            return
         minute = snap.received_at.strftime("%H:%M")
         bar = self._bars.get(snap.token)
         carry_volume = None

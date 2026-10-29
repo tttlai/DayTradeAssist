@@ -106,6 +106,16 @@ class AngelAPI:
                 return row.get("token")
         return None
 
+    def get_tokens(self, symbols) -> dict[str, str]:
+        """{symbol: NSE equity token} for many symbols in ONE pass over the
+        scrip master (get_token() scans it per call, too slow for hundreds)."""
+        wanted = {f"{s}-EQ": s for s in symbols}
+        found = {}
+        for row in self._load_scrip_master():
+            if row.get("exch_seg") == "NSE" and row.get("symbol") in wanted and row.get("token"):
+                found[wanted[row["symbol"]]] = row["token"]
+        return found
+
     def _pace(self):
         wait = MIN_CALL_GAP_SECONDS - (time.monotonic() - self._last_call_at)
         if wait > 0:

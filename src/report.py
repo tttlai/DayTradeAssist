@@ -111,6 +111,63 @@ def format_new_triggers(plans, check_time: str) -> str:
     return "\n".join(lines)
 
 
+def format_gap_armed(count: int, problem: str | None, record_line: str) -> str:
+    """The morning note that the gap-fade scan is on."""
+    lines = ["*Gap-Fade Scan*", ""]
+    if problem or count == 0:
+        lines.append(f"⚠️ Not armed today: {problem or 'no stock passed the price/liquidity filters'}")
+    else:
+        lines.append(
+            f"Watching {count} cheap, liquid stocks. At about 09:16 I'll alert on opening gaps of "
+            f"{config.PENNY_GAP_MIN * 100:g}%+ (gap UP = SHORT, gap DOWN = BUY), at most {config.PENNY_MAX_ALERTS} "
+            f"alerts, with a {config.PENNY_TARGET_PCT * 100:g}% target and {config.PENNY_STOP_PCT * 100:g}% stop."
+        )
+    if record_line:
+        lines += ["", record_line]
+    return "\n".join(lines)
+
+
+def format_gap_alerts(alerts, hhmm: str) -> str:
+    """Opening-gap fade alerts: act now at market, set target/stop once filled."""
+    lines = [f"*Gap Alert — {hhmm} IST*", ""]
+    for a in alerts:
+        arrow = "🔴 SHORT" if a["direction"] == "SHORT" else "🟢 BUY"
+        side = "above" if a["gap_pct"] > 0 else "below"
+        lines.append(f"*{a['symbol']}* — {arrow} — opened {abs(a['gap_pct']):.1f}% {side} yesterday's close")
+        lines.append(f"  Prev close ₹{a['prev_close']} | Open ₹{a['open']} | Now ₹{a['ltp']}")
+        tgt_sign, stop_sign = ("+", "-") if a["direction"] == "BUY" else ("-", "+")
+        lines.append(
+            f"  Entry ~₹{a['ltp']} | Target ₹{a['target']} ({tgt_sign}{config.PENNY_TARGET_PCT * 100:g}%) | "
+            f"Stop ₹{a['stop']} ({stop_sign}{config.PENNY_STOP_PCT * 100:g}%) | "
+            f"Qty {a['quantity']} (about ₹{a['quantity'] * a['ltp']:,.0f})"
+        )
+        if a.get("large_gap"):
+            lines.append("  ⚠️ _gap over 5% — often news-driven, higher risk_")
+        lines.append("")
+    lines.append("Place a market order now, then set the target and stop once filled. Exit by 15:15 if neither hits.")
+    lines.append("_Experimental: backtests show cheap stocks tend to fade opening gaps. Not a guarantee._")
+    lines.append("")
+    lines.append(DISCLAIMER)
+    return "\n".join(lines)
+
+
+def format_gap_review(results) -> str:
+    """How today's gap alerts turned out (entry at the alert price)."""
+    lines = ["*Gap Alerts — how they turned out*", ""]
+    total = 0.0
+    for r in results:
+        if r.get("pnl") is None:
+            lines.append(f"❔ *{r['symbol']}* ({r['direction']}) — couldn't compute an outcome (no price data)")
+            continue
+        total += r["pnl"]
+        icon = "✅" if r["pnl"] > 0 else "❌"
+        lines.append(f"{icon} *{r['symbol']}* ({r['direction']}) — {r['outcome'].replace('_', ' ')}")
+        lines.append(f"  Entry ₹{r['entry']} → Exit ₹{r['exit']} × {r['quantity']} = ₹{r['pnl']:+,.0f} ({r['pct']:+.2f}%)")
+    lines += ["", f"If you took every alert: ₹{total:+,.0f}", "",
+              "_Hypothetical: fills at the alert price, no brokerage, taxes or slippage._"]
+    return "\n".join(lines)
+
+
 def format_trade_paths(paths) -> str:
     """Observation-only look back at what each trade's price did after entry
     (src/tradepath.py). Informational: nothing here changes any decision."""

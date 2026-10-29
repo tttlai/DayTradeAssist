@@ -76,6 +76,23 @@ STREAM_ENABLED = _get_bool("STREAM_ENABLED", True)
 # column of data/universe.csv (stocks without one are never capped).
 MAX_PER_SECTOR = _get_int("MAX_PER_SECTOR", 2)
 
+# --- Opening-gap fade for cheap liquid stocks (src/penny.py) -----------------
+# Each morning the live stream reads every cheap, liquid stock's opening gap
+# right after 09:15: a gap UP of PENNY_GAP_MIN or more is a SHORT alert, a gap
+# DOWN of that size a BUY alert, with a percentage target and stop.
+PENNY_ENABLED = _get_bool("PENNY_ENABLED", True)
+PENNY_PRICE_MIN = _get_float("PENNY_PRICE_MIN", 10)
+PENNY_PRICE_MAX = _get_float("PENNY_PRICE_MAX", 100)
+PENNY_MIN_DAILY_VALUE = _get_float("PENNY_MIN_DAILY_VALUE", 30_000_000)  # Rs 3 crore/day
+PENNY_GAP_MIN = _get_float("PENNY_GAP_MIN", 0.02)  # 2%
+PENNY_GAP_MAX = _get_float("PENNY_GAP_MAX", 0.05)  # beyond this: news/circuit/corporate action. Backtest: gaps >5% lost money, skip
+PENNY_TARGET_PCT = _get_float("PENNY_TARGET_PCT", 0.03)
+PENNY_STOP_PCT = _get_float("PENNY_STOP_PCT", 0.02)
+PENNY_MAX_ALERTS = _get_int("PENNY_MAX_ALERTS", 3)  # per day
+PENNY_MAX_DRIFT = _get_float("PENNY_MAX_DRIFT", 0.01)  # skip if already >1% off the open when seen
+PENNY_ALLOW_SHORTS = _get_bool("PENNY_ALLOW_SHORTS", True)
+PENNY_BUDGET = _get_float("PENNY_BUDGET", MAX_BUDGET)  # split evenly across PENNY_MAX_ALERTS
+
 # Don't enter once price is already more than this many ATRs past the
 # trigger -- a chase, with a stop sitting right back at the broken level.
 # Backtest (realistic fills): entries >0.5 ATR past the trigger lost money

@@ -196,6 +196,43 @@ of at the next poll, with no rate limit and no empty-candle failures.
   volume per stock, and how many minute candles have been recorded today.
 - Turn it off with `STREAM_ENABLED=false`.
 
+### Gap-fade alerts for cheap stocks
+
+A separate, experimental feature for stocks priced Rs 10-100 that trade at
+least Rs 3 crore a day (about 150 names). It does **not** pick stocks the
+evening before: a backtest on 265 days of whole-market data found nothing
+known beforehand that predicts direction, but it did find that these stocks
+tend to **fade an opening gap** -- one that opens well above yesterday's close
+drops back, one that opens well below bounces. So:
+
+- **08:40-09:30, "Gap-Fade Scan" note.** The universe is built from yesterday's
+  whole-market NSE data (no Angel login) and today's scan is armed.
+- **About 09:16, "Gap Alert".** A live stream reads every stock's open. A gap
+  UP of 2-5% is a **SHORT** alert, a gap DOWN of 2-5% a **BUY** alert, at most
+  3 alerts a day, the most liquid first. Each shows the open, the current
+  price, a **3% target and 2% stop** (exit at those levels, not at the close;
+  15:15 is the fallback) and a quantity from your budget split three ways. The
+  alert is skipped if price has already moved over 1% from the open, and a gap
+  over 5% is skipped altogether (news-driven: it lost money in the backtest).
+- **After the close, "Gap Alerts - how they turned out".** Each alert is
+  replayed against real one-minute prices to see whether the target or stop was
+  hit, and kept in `penny_alerts.jsonl` / `penny_results.jsonl`. `/penny` shows
+  today's status and the live track record.
+
+Backtest of exactly this policy (`python -m src.penny_backtest`, buying/
+shorting at the open, 0.2% round-trip cost, the stop assumed to hit first
+whenever both levels were touched in a day): 728 trades over 243 days, 61%
+winners, **+0.69% per trade** (+0.66% in the first half, +0.72% in the second),
+roughly +Rs 115 on a Rs 16,700 position. It stays positive at 0.4% costs
+(+0.49%) and across nearby gap/target/stop settings; shorts did better than
+buys. Caveats: it is a backtest on daily bars (they cannot say whether the
+target or stop came first, so the true figure lies between the +0.69%
+pessimistic and a +1.08% optimistic case), the rules were chosen on the same
+data, a market order at 09:16 can fill worse than the open, and shorting needs
+the stock to be allowed for intraday shorts in your account. The live
+track record is the real test. Turn it off with `PENNY_ENABLED=false`, or use
+`PENNY_ALLOW_SHORTS=false` for buy alerts only.
+
 ### Trade review (what happened after entry)
 
 Once a stock is confirmed the tool doesn't act on it again -- stops, targets
