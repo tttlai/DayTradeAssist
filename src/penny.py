@@ -21,7 +21,7 @@ validated is exactly what runs.
 import math
 from dataclasses import dataclass
 
-from . import config
+from . import config, tradesim
 
 TICK = 0.05  # NSE tick size for these stocks
 LARGE_GAP = 0.05  # beyond this the move is probably news-driven: still allowed, flagged
@@ -188,6 +188,92 @@ def order_rows(universe: list[PennyStock]) -> list[dict]:
             "skip_if_open_below": round_tick(s.last_close * (1 - config.PENNY_GAP_MAX)),
         })
     return rows
+
+
+SHEET_RESULT_COLS = [
+    "symbol", "prev_close", "value_cr", "sell_if_open_at_or_above", "buy_if_open_at_or_below",
+    "open", "gap_pct", "signal", "alerted", "entry", "target", "stop", "exit", "outcome",
+    "pnl_per_share", "pnl_pct", "quantity", "pnl_rs", "day_high", "day_low", "day_close", "open_to_close_pct", "basis",
+]
+
+
+def grade_sheet(universe: list[PennyStock], day_rows: dict, candles_for, alerted=()) -> list[dict]:
+    """The evening order sheet with the day's outcome filled in for EVERY stock.
+
+    day_rows: {symbol: [date, open, high, low, close, volume]} (that day's NSE
+    file). candles_for(stock) -> that day's intraday candles from the open
+    (oldest first) or None; without them a stock falls back to its single
+    daily bar. A stock that met the gap rule is graded as if traded at the
+    open with the standard target/stop (a stop touched first wins when one
+    candle touches both); the rest show the move they made but no trade.
+    The same rule as the live alerts -- minus the 3-alert cap, so `alerted`
+    marks the ones that were actually sent."""
+    alerted = set(alerted)
+    rows = []
+    for base in order_rows(universe):
+        stock = next(s for s in universe if s.symbol == base["symbol"])
+        row = {c: base.get(c) for c in SHEET_RESULT_COLS}
+        day = day_rows.get(stock.symbol)
+        if not day or day[1] <= 0 or stock.last_close <= 0:
+            row["signal"] = "no data"
+            rows.append(row)
+            continue
+        _, o, h, l, c, _v = day
+        gap = o / stock.last_close - 1
+        direction = gap_direction(gap)
+        row.update(
+            open=round(o, 2), gap_pct=round(gap * 100, 2), day_high=round(h, 2), day_low=round(l, 2),
+            day_close=round(c, 2), open_to_close_pct=round((c / o - 1) * 100, 2),
+        )
+        if direction is None:
+            if abs(gap) > config.PENNY_GAP_MAX:
+                row["signal"] = "skip (gap too big)"
+            elif abs(gap) < config.PENNY_GAP_MIN:
+                row["signal"] = "no signal"
+            else:
+                row["signal"] = "skip (shorts off)"
+            rows.append(row)
+            continue
+        qty = quantity(o)
+        if qty <= 0:
+            row["signal"] = "skip (too expensive)"
+            rows.append(row)
+            continue
+        side = "LONG" if direction == "BUY" else "SHORT"
+        target, stop = levels(direction, round(o, 2))
+        candles = candles_for(stock)
+        basis = "1-min candles"
+        if not candles:
+            candles, basis = [day], "daily bar"
+        sim = tradesim.walk_candles(candles, side, stop, target)
+        per_share = tradesim.pnl(side, round(o, 2), sim.exit_price, 1)
+        row.update(
+            signal="SELL" if direction == "SHORT" else "BUY", alerted="yes" if stock.symbol in alerted else "",
+            entry=round(o, 2), target=target, stop=stop, exit=round(sim.exit_price, 2),
+            outcome=sim.outcome.replace("_", " "), pnl_per_share=round(per_share, 2),
+            pnl_pct=round(per_share / o * 100, 2), quantity=qty, pnl_rs=round(per_share * qty, 2), basis=basis,
+        )
+        rows.append(row)
+    return rows
+
+
+def sheet_results_csv(rows: list[dict]) -> str:
+    """Graded sheet as CSV text (for the Telegram attachment)."""
+    lines = [",".join(SHEET_RESULT_COLS)]
+    for r in rows:
+        lines.append(",".join("" if r.get(c) is None else str(r[c]) for c in SHEET_RESULT_COLS))
+    return "\n".join(lines) + "\n"
+
+
+def sheet_totals(rows: list[dict]) -> dict:
+    """Headline numbers for a graded sheet (graded = signal rows with a P&L)."""
+    graded = [r for r in rows if r.get("pnl_rs") is not None]
+    live = [r for r in graded if r.get("alerted") == "yes"]
+    return {
+        "stocks": len(rows), "signals": len(graded), "winners": sum(1 for r in graded if r["pnl_rs"] > 0),
+        "total": sum(r["pnl_rs"] for r in graded), "alerted": len(live), "alerted_total": sum(r["pnl_rs"] for r in live),
+        "avg_pct": (sum(r["pnl_pct"] for r in graded) / len(graded)) if graded else 0.0,
+    }
 
 
 def sheet_csv(universe: list[PennyStock]) -> str:

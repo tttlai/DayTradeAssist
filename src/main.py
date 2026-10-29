@@ -105,6 +105,7 @@ def _default_state() -> dict:
         "penny_evening_done": False,  # tonight's universe (for the next trading day) is built
         "penny_alerts": [],  # gap alerts sent today (reviewed after the close)
         "penny_review_done": False,
+        "penny_sheet_done": False,  # the graded order sheet for today has been sent
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "gate_log": [],  # per-window, per-stock confirmation gate results, reused by run_eval()
         "sent_summary": False,
@@ -435,7 +436,7 @@ def _reset_day(now):
         _stop_stream()
         _stop_penny_stream()
         _monitor_close(force=True)
-        _penny.update(next_evening=None, probed=set(), preopen_sent=False, flagged=set())
+        _penny.update(next_evening=None, next_sheet=None, probed=set(), preopen_sent=False, flagged=set())
         _monitor.update(
             date=today, last_poll=None, next_attempt=None, last_ok=None, last_full={}, last_sig={},
             stream_disabled=False, verified=set(), fast=False, last_source=None,
@@ -706,9 +707,11 @@ PENNY_ALERT_START = dtime(9, 15, 30)
 PENNY_SCAN_END = dtime(9, 35)
 PENNY_REVIEW_START = dtime(15, 36)
 PENNY_REVIEW_END = dtime(17, 30)
+PENNY_SHEET_START = dtime(16, 40)  # NSE's file for the day is out at ~16:35 IST
+PENNY_SHEET_GIVE_UP = dtime(21, 0)  # after this the evening build stops waiting for the graded sheet
 PENNY_ARM_ATTEMPTS = 3
 
-_penny = {"stream": None, "next_evening": None, "probed": set(), "preopen_sent": False, "flagged": set()}
+_penny = {"stream": None, "next_evening": None, "next_sheet": None, "probed": set(), "preopen_sent": False, "flagged": set()}
 PENNY_UNIVERSE_FILE = config.PERSIST_DIR / "penny_universe.json"
 
 
@@ -968,6 +971,71 @@ def run_penny_review():
     state = load_full_state()
     state["penny_review_done"] = True
     save_full_state(state)
+
+
+def run_penny_sheet_result() -> bool:
+    """After NSE publishes the day's file, grade EVERY stock on today's order
+    sheet (P&L if it met the gap rule, its open-to-close move if not) and send
+    the updated CSV. Returns True when finished (sent, or nothing to grade);
+    False to try again shortly. Never raises."""
+    try:
+        today = timeutil.now_ist().date()
+        saved = _load_penny_universe(today.isoformat())
+        state = load_full_state()
+        if saved and saved["stocks"]:
+            try:
+                day_rows = nse_data.fetch_bhavcopy_for_date(today)
+            except nse_data.NSEUnavailable as e:
+                print(f"[penny] sheet results: NSE unavailable ({e}); will retry")
+                return False
+            if day_rows is None:
+                return False  # today's file isn't out yet
+            universe = [penny.PennyStock(**u) for u in saved["stocks"]]
+            session = {"api": None, "failed": False}
+
+            def candles_for(stock):
+                if session["failed"]:
+                    return None
+                try:
+                    if session["api"] is None:
+                        api = AngelAPI()
+                        api.login()
+                        session["api"] = api
+                    candles = session["api"].get_intraday_candles(stock.token, interval="ONE_MINUTE")
+                except Exception as e:
+                    print(f"[penny] sheet candles for {stock.symbol} failed: {e.__class__.__name__}: {e}")
+                    session["failed"] = session["api"] is None
+                    return None
+                return [c for c in candles if "09:15" <= timeutil.candle_time_str(c[0]) <= config.SQUARE_OFF_TIME]
+
+            try:
+                alerted = {a["symbol"] for a in state.get("penny_alerts", [])}
+                rows = penny.grade_sheet(universe, day_rows, candles_for, alerted)
+            finally:
+                if session["api"] is not None:
+                    try:
+                        session["api"].logout()
+                    except Exception:
+                        pass
+            label = today.strftime("%a %d %b")
+            for r in rows:
+                if r.get("pnl_rs") is not None:
+                    store.append_record("penny_sheet_results.jsonl", {"date": today.isoformat(), **r}, key=("date", "symbol"))
+            notify.send_message(report.format_gap_sheet_result(rows, label))
+            notify.send_document(
+                f"gap_scan_results_{today.isoformat()}.csv", penny.sheet_results_csv(rows).encode("utf-8"),
+                caption=f"Order sheet for {label} with every stock's result ({len(rows)} stocks)",
+            )
+        state = load_full_state()
+        state["penny_sheet_done"] = True
+        save_full_state(state)
+        return True
+    except Exception as e:
+        print(f"[penny] sheet results raised {e.__class__.__name__}: {e}")
+        state = load_full_state()
+        state["penny_sheet_done"] = True  # don't loop on a bug
+        save_full_state(state)
+        return True
 
 
 def penny_status_text() -> str:
@@ -1385,8 +1453,20 @@ def run_auto():
 
     if (
         config.PENNY_ENABLED
+        and PENNY_SHEET_START <= t <= PENNY_EVENING_END
+        and not state.get("penny_sheet_done")
+        and (_penny["next_sheet"] is None or now >= _penny["next_sheet"])
+    ):
+        _penny["next_sheet"] = now + timedelta(seconds=PENNY_EVENING_RETRY_SECONDS)
+        print(f"[auto] {t} IST - grading today's gap-fade sheet")
+        run_penny_sheet_result()
+        return
+
+    if (
+        config.PENNY_ENABLED
         and PENNY_EVENING_START <= t <= PENNY_EVENING_END
         and not state.get("penny_evening_done")
+        and (state.get("penny_sheet_done") or t >= PENNY_SHEET_GIVE_UP)
         and (_penny["next_evening"] is None or now >= _penny["next_evening"])
     ):
         _penny["next_evening"] = now + timedelta(seconds=PENNY_EVENING_RETRY_SECONDS)

@@ -203,6 +203,38 @@ def format_gap_review(results) -> str:
     return "\n".join(lines)
 
 
+def format_gap_sheet_result(rows, for_label: str) -> str:
+    """The end-of-day note that goes with the graded order sheet (CSV)."""
+    from . import penny
+
+    t = penny.sheet_totals(rows)
+    lines = [f"*Gap-Fade Sheet — results for {for_label}*", ""]
+    if not t["signals"]:
+        lines.append(f"None of the {t['stocks']} stocks opened with a 2-5% gap, so no trade on the sheet.")
+        return "\n".join(lines)
+    lines.append(
+        f"{t['signals']} of {t['stocks']} stocks met the gap rule; {t['winners']} would have won. "
+        f"Taking every one at the open: ₹{t['total']:+,.0f} (average {t['avg_pct']:+.2f}% per trade)."
+    )
+    if t["alerted"]:
+        lines.append(f"The {t['alerted']} I actually alerted on: ₹{t['alerted_total']:+,.0f}.")
+    graded = sorted((r for r in rows if r.get("pnl_rs") is not None), key=lambda r: r["pnl_rs"], reverse=True)
+    winners = [r for r in graded if r["pnl_rs"] > 0][:3]
+    losers = [r for r in graded[::-1] if r["pnl_rs"] < 0][:3]
+    for title, picks in (("Best", winners), ("Worst", losers)):
+        if picks:
+            lines.append("")
+            lines.append(f"*{title}*")
+            for r in picks:
+                lines.append(
+                    f"{r['signal']} *{r['symbol']}* gap {r['gap_pct']:+.1f}% → {r['outcome']}: "
+                    f"₹{r['pnl_rs']:+,.0f} ({r['pnl_pct']:+.2f}%)"
+                )
+    lines += ["", "_Hypothetical: filled at the open, no brokerage, taxes or slippage. "
+                  "Stocks with no signal are in the file with their open-to-close move only._"]
+    return "\n".join(lines)
+
+
 def format_trade_paths(paths) -> str:
     """Observation-only look back at what each trade's price did after entry
     (src/tradepath.py). Informational: nothing here changes any decision."""
