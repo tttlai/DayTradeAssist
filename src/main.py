@@ -974,9 +974,8 @@ def run_penny_review():
 
 
 def run_penny_sheet_result() -> bool:
-    """After NSE publishes the day's file, grade EVERY stock on today's order
-    sheet (P&L if it met the gap rule, its open-to-close move if not) and send
-    the updated CSV. Returns True when finished (sent, or nothing to grade);
+    """After NSE publishes the day's file, grade every stock on today's order
+    sheet that met the gap rule and send each one's P&L in a message. Returns True when finished (sent, or nothing to grade);
     False to try again shortly. Never raises."""
     try:
         today = timeutil.now_ist().date()
@@ -1022,10 +1021,6 @@ def run_penny_sheet_result() -> bool:
                 if r.get("pnl_rs") is not None:
                     store.append_record("penny_sheet_results.jsonl", {"date": today.isoformat(), **r}, key=("date", "symbol"))
             notify.send_message(report.format_gap_sheet_result(rows, label))
-            notify.send_document(
-                f"gap_scan_results_{today.isoformat()}.csv", penny.sheet_results_csv(rows).encode("utf-8"),
-                caption=f"Order sheet for {label} with every stock's result ({len(rows)} stocks)",
-            )
         state = load_full_state()
         state["penny_sheet_done"] = True
         save_full_state(state)

@@ -204,7 +204,7 @@ def format_gap_review(results) -> str:
 
 
 def format_gap_sheet_result(rows, for_label: str) -> str:
-    """The end-of-day note that goes with the graded order sheet (CSV)."""
+    """The end-of-day note: P&L for every sheet stock that met the gap rule."""
     from . import penny
 
     t = penny.sheet_totals(rows)
@@ -219,19 +219,22 @@ def format_gap_sheet_result(rows, for_label: str) -> str:
     if t["alerted"]:
         lines.append(f"The {t['alerted']} I actually alerted on: ₹{t['alerted_total']:+,.0f}.")
     graded = sorted((r for r in rows if r.get("pnl_rs") is not None), key=lambda r: r["pnl_rs"], reverse=True)
-    winners = [r for r in graded if r["pnl_rs"] > 0][:3]
-    losers = [r for r in graded[::-1] if r["pnl_rs"] < 0][:3]
-    for title, picks in (("Best", winners), ("Worst", losers)):
-        if picks:
-            lines.append("")
-            lines.append(f"*{title}*")
-            for r in picks:
-                lines.append(
-                    f"{r['signal']} *{r['symbol']}* gap {r['gap_pct']:+.1f}% → {r['outcome']}: "
-                    f"₹{r['pnl_rs']:+,.0f} ({r['pnl_pct']:+.2f}%)"
-                )
-    lines += ["", "_Hypothetical: filled at the open, no brokerage, taxes or slippage. "
-                  "Stocks with no signal are in the file with their open-to-close move only._"]
+    lines.append("")
+    room = 3300 - sum(len(x) + 1 for x in lines)  # stay under Telegram's 4096-character limit
+    shown = 0
+    for r in graded:
+        line = (
+            f"{'✅' if r['pnl_rs'] > 0 else '❌'} {r['signal']} *{r['symbol']}* gap {r['gap_pct']:+.1f}% → "
+            f"{r['outcome']}: ₹{r['pnl_rs']:+,.0f} ({r['pnl_pct']:+.2f}%)" + (" 🔔" if r.get("alerted") == "yes" else "")
+        )
+        if room < len(line) + 1:
+            break
+        lines.append(line)
+        room -= len(line) + 1
+        shown += 1
+    if shown < len(graded):
+        lines.append(f"…and {len(graded) - shown} more (smaller P&L).")
+    lines += ["", "🔔 = the ones I alerted on. _Hypothetical: filled at the open, no brokerage, taxes or slippage._"]
     return "\n".join(lines)
 
 

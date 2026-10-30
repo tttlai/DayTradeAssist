@@ -205,16 +205,14 @@ known beforehand that predicts direction, but it did find that these stocks
 tend to **fade an opening gap** -- one that opens well above yesterday's close
 drops back, one that opens well below bounces. So:
 
-- **From 16:40, "Gap-Fade Sheet - results" note and graded CSV.** Once NSE
-  publishes the day's file, every stock on that day's order sheet is graded and
-  the CSV comes back with the result filled in (`gap_scan_results_<date>.csv`).
-  A stock that opened with a 2-5% gap is graded as if traded at the open with
-  the standard 3% target / 2% stop, replayed on real one-minute prices (daily
-  bar if those can't be fetched; a stop touched first wins), with the P&L per
-  share, in percent and in rupees for the quantity your budget gives. Stocks
-  with no signal carry their open-to-close move only. The `alerted` column
-  marks the ones that were really alerted, since the 3-alert cap means you saw
-  fewer than the sheet shows. Saved to `penny_sheet_results.jsonl`.
+- **From 16:40, "Gap-Fade Sheet - results" note.** Once NSE publishes the
+  day's file, every stock on that day's order sheet that opened with a 2-5% gap
+  is graded as if traded at the open with the standard 3% target / 2% stop,
+  replayed on real one-minute prices (daily bar if those can't be fetched; a
+  stop touched first wins), and the note lists each one's P&L in rupees for the
+  quantity your budget gives. A bell marks the ones that were really alerted,
+  since the 3-alert cap means you saw fewer than the sheet shows. No file is
+  attached. Saved to `penny_sheet_results.jsonl`.
 - **From 18:00 the evening before, "Gap-Fade Scan - ready for <next trading
   day>" note.** NSE publishes the day's data at about 16:35 IST, so the
   universe is built from today's whole-market close (no Angel login) and saved

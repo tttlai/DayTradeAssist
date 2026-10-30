@@ -257,14 +257,6 @@ def grade_sheet(universe: list[PennyStock], day_rows: dict, candles_for, alerted
     return rows
 
 
-def sheet_results_csv(rows: list[dict]) -> str:
-    """Graded sheet as CSV text (for the Telegram attachment)."""
-    lines = [",".join(SHEET_RESULT_COLS)]
-    for r in rows:
-        lines.append(",".join("" if r.get(c) is None else str(r[c]) for c in SHEET_RESULT_COLS))
-    return "\n".join(lines) + "\n"
-
-
 def sheet_totals(rows: list[dict]) -> dict:
     """Headline numbers for a graded sheet (graded = signal rows with a P&L)."""
     graded = [r for r in rows if r.get("pnl_rs") is not None]
