@@ -138,7 +138,7 @@ def format_gap_armed(count: int, problem: str | None, record_line: str,
             for r in sheet:
                 sell = f"SELL if open >= {r['sell_if_open_at_or_above']}" if r["sell_if_open_at_or_above"] is not None else "no sell"
                 lines.append(f"{r['symbol']}: prev {r['prev_close']} | {sell} | BUY if open <= {r['buy_if_open_at_or_below']}")
-            lines.append(f"(top {len(sheet)} of {count}; the full list is attached as a file)")
+            lines.append(f"(top {len(sheet)} of {count} most liquid)")
     if record_line:
         lines += ["", record_line]
     return "\n".join(lines)

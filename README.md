@@ -9,6 +9,12 @@ been if you'd followed every signal exactly. **You place every order
 yourself in your Angel One app — this tool never places, modifies, or
 cancels an order.**
 
+> **Current mode: gap-fade only.** The Nifty-50 watchlist / confirmation /
+> summary / eval strategy described first below is switched off
+> (`MAIN_ENABLED=false`, the default); the service runs only the cheap-stock
+> opening-gap scan. Set `MAIN_ENABLED=true` to bring the original back. No
+> file is ever attached to Telegram: the order sheet is in the message.
+
 ## Important — read before using
 
 - This is a rules-based technical screener, not financial advice, and it is
@@ -221,9 +227,8 @@ drops back, one that opens well below bounces. So:
   universe exists by the morning, it is built at 08:40-09:30 as a fallback.
   Nothing needs placing that evening: the direction isn't known until the
   open. The note carries an **order sheet** for the 15 most liquid stocks
-  ("SELL if open >= X | BUY if open <= Y", with the skip-beyond levels) and the
-  **full list is attached as a CSV**, so the decision at 09:15 is a glance, not
-  a calculation. Whichever way each stock opens picks its side.
+  ("SELL if open >= X | BUY if open <= Y", with the skip-beyond levels), so the
+  decision at 09:15 is a glance, not a calculation. Whichever way each stock opens picks its side.
 - **09:00-09:15, pre-open probe and heads-up.** The stream is up from 09:00.
   NSE sets indicative opening prices at 09:08; if Angel's feed carries them, a
   **Pre-Open Heads-Up** at about 09:10 names the likely gap-fade setups five

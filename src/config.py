@@ -80,6 +80,10 @@ MAX_PER_SECTOR = _get_int("MAX_PER_SECTOR", 2)
 # Each morning the live stream reads every cheap, liquid stock's opening gap
 # right after 09:15: a gap UP of PENNY_GAP_MIN or more is a SHORT alert, a gap
 # DOWN of that size a BUY alert, with a percentage target and stop.
+# The original Nifty-50 breakout strategy (watchlist, confirmations, summary,
+# eval). Off: the service now runs only the gap-fade (penny) scan. Set
+# MAIN_ENABLED=true to bring it back.
+MAIN_ENABLED = _get_bool("MAIN_ENABLED", False)
 PENNY_ENABLED = _get_bool("PENNY_ENABLED", True)
 PENNY_PRICE_MIN = _get_float("PENNY_PRICE_MIN", 10)
 PENNY_PRICE_MAX = _get_float("PENNY_PRICE_MAX", 100)

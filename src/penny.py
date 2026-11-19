@@ -268,12 +268,3 @@ def sheet_totals(rows: list[dict]) -> dict:
     }
 
 
-def sheet_csv(universe: list[PennyStock]) -> str:
-    """The full order sheet as CSV text (for the Telegram attachment)."""
-    rows = order_rows(universe)
-    cols = ["symbol", "prev_close", "value_cr", "sell_if_open_at_or_above", "buy_if_open_at_or_below",
-            "skip_if_open_above", "skip_if_open_below"]
-    lines = [",".join(cols)]
-    for r in rows:
-        lines.append(",".join("" if r[c] is None else str(r[c]) for c in cols))
-    return "\n".join(lines) + "\n"

@@ -797,11 +797,6 @@ def run_penny_arm(evening: bool = False) -> bool:
                 sheet=penny.order_rows(universe)[:15],
             )
         )
-        if universe:
-            notify.send_document(
-                f"gap_scan_for_{target.isoformat()}.csv", penny.sheet_csv(universe).encode("utf-8"),
-                caption=f"Full gap-fade order sheet for {target.strftime('%a %d %b')} ({len(universe)} stocks)",
-            )
         return True
     except Exception as e:
         print(f"[penny] arming raised {e.__class__.__name__}: {e}")
@@ -1329,27 +1324,31 @@ def run_auto():
             and now.time() >= WATCHLIST_WINDOW[0]
         ):
             notify.send_message(
-                "*Market Closed*\n\nToday is an exchange holiday -- no watchlist, "
-                "confirmation checks or eval will run."
+                "*Market Closed*\n\nToday is an exchange holiday -- "
+                + ("no watchlist, confirmation checks or eval will run." if config.MAIN_ENABLED else "no gap-fade scan will run.")
             )
             state["closed_notified"] = True
             save_full_state(state)
         print(f"[auto] {now.date()} is not a trading day -- nothing to do")
         return
 
+    main_on = config.MAIN_ENABLED
+    _reset_day(now)
     run_penny_scan()
-    run_monitor()
+    if main_on:
+        run_monitor()
 
     t = now.time()
     state = load_full_state()
 
-    if WATCHLIST_WINDOW[0] <= t <= WATCHLIST_WINDOW[1] and not state.get("sent_watchlist"):
+    if main_on and WATCHLIST_WINDOW[0] <= t <= WATCHLIST_WINDOW[1] and not state.get("sent_watchlist"):
         print(f"[auto] {t} IST in watchlist window, not yet sent -> running watchlist")
         run_watchlist()
         return
 
     if (
-        t > WATCHLIST_WINDOW[1]
+        main_on
+        and t > WATCHLIST_WINDOW[1]
         and not state.get("sent_watchlist")
         and not state.get("watchlist_failure_notified")
     ):
@@ -1369,7 +1368,7 @@ def run_auto():
     if (
         config.PENNY_ENABLED
         and PENNY_ARM_START <= t <= PENNY_ARM_END
-        and (state.get("sent_watchlist") or t > WATCHLIST_WINDOW[1])
+        and (not main_on or state.get("sent_watchlist") or t > WATCHLIST_WINDOW[1])
         and _load_penny_universe(now.date().isoformat()) is None
     ):
         print(f"[auto] {t} IST - no gap-fade universe from last evening, arming now")
@@ -1377,7 +1376,7 @@ def run_auto():
         return
 
     checks_done = state.get("confirm_checks_done", [])
-    for key, start, end in CONFIRM_WINDOWS:
+    for key, start, end in (CONFIRM_WINDOWS if main_on else []):
         if key in checks_done:
             continue
         if t < start:
@@ -1398,12 +1397,12 @@ def run_auto():
         save_full_state(state)
 
     all_confirms_done = all(key in checks_done for key, _, _ in CONFIRM_WINDOWS)
-    if SUMMARY_WINDOW[0] <= t <= SUMMARY_WINDOW[1] and all_confirms_done and not state.get("sent_summary"):
+    if main_on and SUMMARY_WINDOW[0] <= t <= SUMMARY_WINDOW[1] and all_confirms_done and not state.get("sent_summary"):
         print(f"[auto] {t} IST in summary window, not yet sent -> running summary")
         run_summary()
         return
 
-    if t > SUMMARY_WINDOW[1] and all_confirms_done and not state.get("sent_summary"):
+    if main_on and t > SUMMARY_WINDOW[1] and all_confirms_done and not state.get("sent_summary"):
         # The summary window closed without ever completing (every retry
         # inside it raised before reaching the normal sent_summary update).
         # Unlike confirm windows there's only one summary window, so there's
@@ -1428,12 +1427,12 @@ def run_auto():
         run_penny_review()
         return
 
-    if EVAL_WINDOW[0] <= t <= EVAL_WINDOW[1] and state.get("sent_summary") and not state.get("sent_eval"):
+    if main_on and EVAL_WINDOW[0] <= t <= EVAL_WINDOW[1] and state.get("sent_summary") and not state.get("sent_eval"):
         print(f"[auto] {t} IST in eval window, not yet sent -> running eval")
         run_eval()
         return
 
-    if t > EVAL_WINDOW[1] and state.get("sent_summary") and not state.get("sent_eval"):
+    if main_on and t > EVAL_WINDOW[1] and state.get("sent_summary") and not state.get("sent_eval"):
         # Same fallback pattern as watchlist/confirm/summary -- if the eval
         # window closes without ever completing, say so rather than just
         # never sending anything and leaving sent_eval permanently False.
