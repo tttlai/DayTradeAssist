@@ -712,7 +712,7 @@ PENNY_SHEET_GIVE_UP = dtime(21, 0)  # after this the evening build stops waiting
 PENNY_ARM_ATTEMPTS = 3
 
 _penny = {"stream": None, "next_evening": None, "next_sheet": None, "probed": set(), "preopen_sent": False, "flagged": set(),
-          "shock_noted": False}
+          "shock_noted": False, "benchmark": None}
 PENNY_UNIVERSE_FILE = config.PERSIST_DIR / "penny_universe.json"
 
 
@@ -824,7 +824,6 @@ def _run_penny_scan():
     state = load_full_state()
     saved = _load_penny_universe(now.date().isoformat())
     universe = [penny.PennyStock(**u) for u in (saved or {}).get("stocks", [])]
-    benchmark = (saved or {}).get("benchmark_token")
     active = bool(config.PENNY_ENABLED and universe and PENNY_SCAN_START <= t <= PENNY_SCAN_END)
     if not active:
         if _penny["stream"] is not None:
@@ -838,6 +837,13 @@ def _run_penny_scan():
         if _monitor["next_attempt"] and now < _monitor["next_attempt"]:
             return
         api = _get_session()  # shared login; raises -> run_penny_scan() backs off
+        benchmark = saved.get("benchmark_token")
+        if not benchmark:  # a universe saved before the market-gap check existed
+            try:
+                benchmark = api.get_tokens([penny.BENCHMARK]).get(penny.BENCHMARK)
+            except Exception as e:
+                print(f"[penny] benchmark lookup failed: {e.__class__.__name__}: {e}")
+        _penny["benchmark"] = benchmark
         client = stream.StreamClient(
             config.ANGEL_API_KEY, config.ANGEL_CLIENT_CODE, api.auth_token, api.feed_token,
             {**{s.token: s.symbol for s in universe}, **({benchmark: penny.BENCHMARK} if benchmark else {})},
@@ -850,12 +856,12 @@ def _run_penny_scan():
 
     st = _penny["stream"]
     if t < PENNY_ALERT_START:
-        _penny_preopen(now, st, universe, benchmark)  # record what the feed shows pre-open; maybe a heads-up
+        _penny_preopen(now, st, universe, _penny["benchmark"])  # record what the feed shows pre-open; maybe a heads-up
         return
     already = {a["symbol"] for a in state.get("penny_alerts", [])}
     if len(already) >= config.PENNY_MAX_ALERTS or not st.is_healthy(now):
         return
-    mgap = _market_gap(st, benchmark, now)
+    mgap = _market_gap(st, _penny["benchmark"], now)
     if penny.is_shock(mgap) and config.PENNY_SKIP_ON_SHOCK:
         if not _penny["shock_noted"]:
             _penny["shock_noted"] = True
