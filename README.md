@@ -237,6 +237,18 @@ drops back, one that opens well below bounces. So:
   what it shows for the 60 most liquid names is recorded at 09:02, 09:06,
   09:10 and 09:14 to `penny_preopen.jsonl`; the heads-up simply stays silent if
   the feed shows nothing. `PENNY_PREOPEN=false` turns the heads-up off.
+- **Market-wide gap check.** The Nifty ETF (NIFTYBEES) is streamed alongside
+  the stocks and the alert and heads-up open with "Market opened +x% (Nifty)".
+  That gap is how overnight US moves and geopolitical shocks arrive at the
+  Indian open, so no US data feed or news reading is needed. In a 265-day test
+  the fade averaged about +0.9% per trade when the market gapped under 0.4%,
+  +0.6% at 0.4-1%, but only +0.2% above 1% (same in both halves of the
+  period, 102 trades, so a good rather than certain finding). Above
+  `PENNY_SHOCK_GAP` (1%) the alert adds a warning; with
+  `PENNY_SKIP_ON_SHOCK=true` the day's alerts are skipped (said once). The skip
+  is off by default until the live record backs it up; each alert's
+  `market_gap_pct` is saved in `penny_alerts.jsonl` to check that. Earnings
+  (results-day gaps) are not covered: no free results calendar was tested.
 - **From 09:15:30, "Gap Alert".** A live stream reads every stock's open. A gap
   UP of 2-5% is a **SHORT** alert, a gap DOWN of 2-5% a **BUY** alert, at most
   3 alerts a day, the most liquid first. Each shows the open, the current

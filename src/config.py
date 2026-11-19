@@ -85,6 +85,12 @@ MAX_PER_SECTOR = _get_int("MAX_PER_SECTOR", 2)
 # MAIN_ENABLED=true to bring it back.
 MAIN_ENABLED = _get_bool("MAIN_ENABLED", False)
 PENNY_ENABLED = _get_bool("PENNY_ENABLED", True)
+# Market-wide opening gap (Nifty ETF, which is how overnight US moves and
+# geopolitical shocks show up at the Indian open). Beyond this the gap fade has
+# worked far less (265-day test: +0.2% vs +0.9% per trade); alerts say so, and
+# with PENNY_SKIP_ON_SHOCK=true they are skipped on such days.
+PENNY_SHOCK_GAP = _get_float("PENNY_SHOCK_GAP", 0.01)
+PENNY_SKIP_ON_SHOCK = _get_bool("PENNY_SKIP_ON_SHOCK", False)
 PENNY_PRICE_MIN = _get_float("PENNY_PRICE_MIN", 10)
 PENNY_PRICE_MAX = _get_float("PENNY_PRICE_MAX", 100)
 PENNY_MIN_DAILY_VALUE = _get_float("PENNY_MIN_DAILY_VALUE", 30_000_000)  # Rs 3 crore/day

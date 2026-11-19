@@ -144,9 +144,26 @@ def format_gap_armed(count: int, problem: str | None, record_line: str,
     return "\n".join(lines)
 
 
-def format_gap_preopen(alerts, hhmm: str) -> str:
+def market_gap_line(gap_pct: float | None, indicative: bool = False) -> str | None:
+    """One line on the market's own gap, with a warning on shock days."""
+    if gap_pct is None:
+        return None
+    what = "indicatively set to open" if indicative else "opened"
+    line = f"📊 Market {what} {gap_pct:+.1f}% (Nifty)"
+    if abs(gap_pct) > config.PENNY_SHOCK_GAP * 100:
+        line += (
+            f" — ⚠️ big market-wide gap (overnight global/news move). Gap fades have worked far less on days "
+            f"like this (about +0.2% vs +0.9% per trade in a 265-day test)."
+        )
+    return line
+
+
+def format_gap_preopen(alerts, hhmm: str, market_gap_pct: float | None = None) -> str:
     """Heads-up from NSE's indicative pre-open prices, ahead of the real open."""
     lines = [f"*Pre-Open Heads-Up — {hhmm} IST*", ""]
+    market = market_gap_line(market_gap_pct, indicative=True)
+    if market:
+        lines += [market, ""]
     lines.append("Indicative opening prices (NOT final) point to these gap-fade setups:")
     lines.append("")
     for a in alerts:
@@ -163,6 +180,9 @@ def format_gap_preopen(alerts, hhmm: str) -> str:
 def format_gap_alerts(alerts, hhmm: str) -> str:
     """Opening-gap fade alerts: act now at market, set target/stop once filled."""
     lines = [f"*Gap Alert — {hhmm} IST*", ""]
+    market = market_gap_line(alerts[0].get("market_gap_pct")) if alerts else None
+    if market:
+        lines += [market, ""]
     for a in alerts:
         arrow = "🔴 SHORT" if a["direction"] == "SHORT" else "🟢 BUY"
         side = "above" if a["gap_pct"] > 0 else "below"
@@ -184,6 +204,15 @@ def format_gap_alerts(alerts, hhmm: str) -> str:
     lines.append("")
     lines.append(DISCLAIMER)
     return "\n".join(lines)
+
+
+def format_gap_skipped(gap_pct: float, hhmm: str) -> str:
+    """Said once when PENNY_SKIP_ON_SHOCK holds the alerts back."""
+    return (
+        f"*Gap Alerts skipped — {hhmm} IST*\n\nThe market opened {gap_pct:+.1f}% (Nifty), past the "
+        f"{config.PENNY_SHOCK_GAP * 100:g}% shock level, so no gap-fade alerts today "
+        "(PENNY_SKIP_ON_SHOCK is on)."
+    )
 
 
 def format_gap_review(results) -> str:

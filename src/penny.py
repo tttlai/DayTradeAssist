@@ -135,6 +135,23 @@ def evaluate_open(stock: PennyStock, day_open: float, ltp: float, prev_close: fl
     }
 
 
+BENCHMARK = "NIFTYBEES"  # Nifty 50 ETF: the market's own opening gap
+
+
+def market_gap(price: float | None, prev_close: float | None) -> float | None:
+    """The market's gap (fraction) from the benchmark's price and previous
+    close, or None if either is missing or absurd (bad tick)."""
+    if not price or not prev_close or price <= 0 or prev_close <= 0:
+        return None
+    gap = price / prev_close - 1
+    return gap if abs(gap) <= 0.10 else None
+
+
+def is_shock(gap: float | None) -> bool:
+    """A day the whole market gapped hard (overnight global move/news)."""
+    return gap is not None and abs(gap) > config.PENNY_SHOCK_GAP
+
+
 def pick_alerts(candidates: list[dict], already: set[str], limit: int | None = None) -> list[dict]:
     """Best-ranked qualifying alerts not already sent, capped so a day never
     exceeds PENNY_MAX_ALERTS in total (already-sent ones count)."""

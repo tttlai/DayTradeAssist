@@ -436,7 +436,7 @@ def _reset_day(now):
         _stop_stream()
         _stop_penny_stream()
         _monitor_close(force=True)
-        _penny.update(next_evening=None, next_sheet=None, probed=set(), preopen_sent=False, flagged=set())
+        _penny.update(next_evening=None, next_sheet=None, probed=set(), preopen_sent=False, flagged=set(), shock_noted=False)
         _monitor.update(
             date=today, last_poll=None, next_attempt=None, last_ok=None, last_full={}, last_sig={},
             stream_disabled=False, verified=set(), fast=False, last_source=None,
@@ -711,15 +711,17 @@ PENNY_SHEET_START = dtime(16, 40)  # NSE's file for the day is out at ~16:35 IST
 PENNY_SHEET_GIVE_UP = dtime(21, 0)  # after this the evening build stops waiting for the graded sheet
 PENNY_ARM_ATTEMPTS = 3
 
-_penny = {"stream": None, "next_evening": None, "next_sheet": None, "probed": set(), "preopen_sent": False, "flagged": set()}
+_penny = {"stream": None, "next_evening": None, "next_sheet": None, "probed": set(), "preopen_sent": False, "flagged": set(),
+          "shock_noted": False}
 PENNY_UNIVERSE_FILE = config.PERSIST_DIR / "penny_universe.json"
 
 
-def _save_penny_universe(for_date: str, built_from: str, universe, problem):
+def _save_penny_universe(for_date: str, built_from: str, universe, problem, benchmark_token: str | None = None):
     PENNY_UNIVERSE_FILE.parent.mkdir(parents=True, exist_ok=True)
     PENNY_UNIVERSE_FILE.write_text(json.dumps({
         "for_date": for_date, "built_from": built_from, "problem": problem,
         "stocks": [dataclasses.asdict(x) for x in universe],
+        "benchmark_token": benchmark_token,  # Nifty ETF, streamed for the market's own gap
     }))
 
 
@@ -762,7 +764,7 @@ def run_penny_arm(evening: bool = False) -> bool:
         today = now.date()
         target = _next_trading_day(today) if evening else today
         state = load_full_state()
-        universe, problem = [], None
+        universe, problem, benchmark_token = [], None, None
         try:
             if evening and nse_data.fetch_bhavcopy_for_date(today) is None:
                 return False  # today's file isn't out yet: try again shortly
@@ -772,6 +774,7 @@ def run_penny_arm(evening: bool = False) -> bool:
                 return False
             tokens = AngelAPI().get_tokens(history.keys())
             universe = penny.build_universe(history, tokens)
+            benchmark_token = tokens.get(penny.BENCHMARK)
         except nse_data.NSEUnavailable as e:
             problem = f"NSE data unavailable ({e})"
         except Exception as e:
@@ -785,7 +788,9 @@ def run_penny_arm(evening: bool = False) -> bool:
                 print(f"[penny] arming attempt {state['penny_arm_attempts']} failed ({problem}); will retry")
                 save_full_state(state)
                 return False
-        _save_penny_universe(target.isoformat(), today.isoformat() if evening else "yesterday", universe, problem)
+        _save_penny_universe(
+            target.isoformat(), today.isoformat() if evening else "yesterday", universe, problem, benchmark_token
+        )
         if evening:
             state["penny_evening_done"] = True
             save_full_state(state)
@@ -819,6 +824,7 @@ def _run_penny_scan():
     state = load_full_state()
     saved = _load_penny_universe(now.date().isoformat())
     universe = [penny.PennyStock(**u) for u in (saved or {}).get("stocks", [])]
+    benchmark = (saved or {}).get("benchmark_token")
     active = bool(config.PENNY_ENABLED and universe and PENNY_SCAN_START <= t <= PENNY_SCAN_END)
     if not active:
         if _penny["stream"] is not None:
@@ -834,7 +840,8 @@ def _run_penny_scan():
         api = _get_session()  # shared login; raises -> run_penny_scan() backs off
         client = stream.StreamClient(
             config.ANGEL_API_KEY, config.ANGEL_CLIENT_CODE, api.auth_token, api.feed_token,
-            {s.token: s.symbol for s in universe}, record_candles=False,
+            {**{s.token: s.symbol for s in universe}, **({benchmark: penny.BENCHMARK} if benchmark else {})},
+            record_candles=False,
         )
         client.start()
         _penny["stream"] = client
@@ -843,10 +850,17 @@ def _run_penny_scan():
 
     st = _penny["stream"]
     if t < PENNY_ALERT_START:
-        _penny_preopen(now, st, universe)  # record what the feed shows pre-open; maybe a heads-up
+        _penny_preopen(now, st, universe, benchmark)  # record what the feed shows pre-open; maybe a heads-up
         return
     already = {a["symbol"] for a in state.get("penny_alerts", [])}
     if len(already) >= config.PENNY_MAX_ALERTS or not st.is_healthy(now):
+        return
+    mgap = _market_gap(st, benchmark, now)
+    if penny.is_shock(mgap) and config.PENNY_SKIP_ON_SHOCK:
+        if not _penny["shock_noted"]:
+            _penny["shock_noted"] = True
+            print(f"[penny] market gapped {mgap * 100:+.1f}%: skipping today's gap alerts")
+            notify.send_message(report.format_gap_skipped(mgap * 100, now.strftime("%H:%M")))
         return
     candidates = []
     for stock in universe:
@@ -863,6 +877,7 @@ def _run_penny_scan():
         return
     for a in fresh:
         a["preflagged"] = a["symbol"] in _penny["flagged"]
+        a["market_gap_pct"] = None if mgap is None else round(mgap * 100, 2)
 
     hhmm = now.strftime("%H:%M")
     state = load_full_state()
@@ -878,7 +893,18 @@ def _run_penny_scan():
     notify.send_message(report.format_gap_alerts(fresh, hhmm))
 
 
-def _penny_preopen(now, st, universe):
+def _market_gap(st, benchmark_token, now, indicative=False):
+    """The Nifty ETF's gap from the stream (fraction), or None. Before the
+    open (indicative) the last price stands in for the open."""
+    if not benchmark_token:
+        return None
+    snap = st.snapshot(benchmark_token, now=now)
+    if snap is None:
+        return None
+    return penny.market_gap(snap.ltp if indicative else snap.day_open, snap.prev_close)
+
+
+def _penny_preopen(now, st, universe, benchmark_token=None):
     """Before 09:15: (1) record what the live feed shows for the most liquid
     names at a few moments, so we can tell whether it carries NSE's indicative
     pre-open prices at all; (2) if it does, send one heads-up at ~09:10 about
@@ -918,7 +944,10 @@ def _penny_preopen(now, st, universe):
                 "picks": [{"symbol": a["symbol"], "direction": a["direction"], "gap_pct": a["gap_pct"]} for a in picks],
             })
             print(f"[penny] pre-open heads-up: {', '.join(a['symbol'] + ' ' + a['direction'] for a in picks)}")
-            notify.send_message(report.format_gap_preopen(picks, now.strftime("%H:%M")))
+            mgap = _market_gap(st, benchmark_token, now, indicative=True)
+            notify.send_message(
+                report.format_gap_preopen(picks, now.strftime("%H:%M"), None if mgap is None else round(mgap * 100, 2))
+            )
 
 
 def run_penny_review():
