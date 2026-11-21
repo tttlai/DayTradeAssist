@@ -56,7 +56,7 @@ import json
 import time
 from datetime import time as dtime, timedelta
 
-from . import config, eval_agent, github_pr, health, notify, nse_data, penny, report, screener, store, stream, strategy, telegram_commands, timeutil, tradepath, tradesim
+from . import config, eval_agent, github_pr, health, notify, nse_data, overnight, penny, report, screener, store, stream, strategy, telegram_commands, timeutil, tradepath, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
@@ -106,6 +106,7 @@ def _default_state() -> dict:
         "penny_alerts": [],  # gap alerts sent today (reviewed after the close)
         "penny_review_done": False,
         "penny_sheet_done": False,  # the graded order sheet for today has been sent
+        "overnight_sent": False,  # the morning overnight-shock note has been handled today
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "gate_log": [],  # per-window, per-stock confirmation gate results, reused by run_eval()
         "sent_summary": False,
@@ -196,6 +197,8 @@ def handle_commands():
             notify.send_message(penny_status_text())
         elif cmd == "/stream":
             notify.send_message(stream_status_text())
+        elif cmd == "/shock":
+            notify.send_message(overnight_text())
         elif cmd == "/stats":
             notify.send_message(store.trade_stats(store.read_records("trades.jsonl")))
         elif cmd in ("/health", "/status"):
@@ -207,7 +210,7 @@ def handle_commands():
                 "Angel One + Railway status."
             )
         else:
-            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats, /stream, /penny")
+            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats, /stream, /penny, /shock")
 
     if new_last_id != last_id:
         _save_last_update_id(new_last_id)
@@ -1080,6 +1083,85 @@ def penny_status_text() -> str:
     return "\n".join(lines)
 
 
+OVERNIGHT_START = dtime(8, 30)
+OVERNIGHT_END = dtime(8, 55)
+OVERNIGHT_REFRESH_START = dtime(18, 30)  # weekly stats rebuild, after the evening build
+_overnight = {"tried": None}  # date a refresh was last attempted (so a failure doesn't loop)
+
+
+def _overnight_ready(now, allow_build: bool, us=None):
+    """(us_moves, stats, why) -- stats come from the weekly cache, built here
+    only if allowed (it reads a year of NSE files, a few minutes). Pass `us`
+    to reuse an already-fetched US close."""
+    us = us or overnight.fetch_us_moves()
+    if us is None:
+        return None, None, "couldn't fetch the US close from Yahoo"
+    stats = overnight.load_stats(now.replace(tzinfo=None))
+    if stats is None and allow_build:
+        try:
+            stats = overnight.build_and_save(us["spx"], now.replace(tzinfo=None))
+        except nse_data.NSEUnavailable as e:
+            return us, None, f"NSE data unavailable ({e})"
+    if stats is None:
+        return us, None, "the stock statistics are being refreshed after the close; try again this evening"
+    return us, stats, None
+
+
+def _overnight_message(us, stats, now):
+    ranked = overnight.rank(stats)
+    return report.format_overnight_watch(us, ranked, stats.get(penny.BENCHMARK), now.strftime("%a %d %b"))
+
+
+def overnight_text() -> str:
+    """Answer to /shock: the current US close and the historically most affected stocks."""
+    now = timeutil.now_ist()
+    market_hours = now.time() >= dtime(9, 0) and now.time() <= dtime(15, 45) and timeutil.is_trading_day(now.date())
+    try:
+        us, stats, why = _overnight_ready(now, allow_build=not market_hours)
+    except Exception as e:
+        return f"Overnight shock watch failed: {e.__class__.__name__}: {report._plain(e)}"
+    if stats is None:
+        return f"Overnight shock watch unavailable: {why}."
+    return _overnight_message(us, stats, now)
+
+
+def run_overnight():
+    """08:30-08:55 on a trading day: if the US closed down hard, send the
+    overnight shock note once. Never raises; always marks itself done."""
+    state = load_full_state()
+    try:
+        now = timeutil.now_ist()
+        us = overnight.fetch_us_moves()
+        age = (now.date() - us["as_of"]).days if us else None
+        if us and age is not None and age <= 4 and overnight.is_shock(us):
+            _, stats, why = _overnight_ready(now, allow_build=True, us=us)
+            if stats is not None:
+                notify.send_message(_overnight_message(us, stats, now))
+            else:
+                print(f"[overnight] shock day but no stats: {why}")
+        elif us is None:
+            print("[overnight] no US data; skipping")
+    except Exception as e:
+        print(f"[overnight] raised {e.__class__.__name__}: {e}")
+    state = load_full_state()
+    state["overnight_sent"] = True
+    save_full_state(state)
+
+
+def run_overnight_refresh():
+    """Weekly stats rebuild in the evening so the morning note needs no wait."""
+    now = timeutil.now_ist()
+    _overnight["tried"] = now.date()
+    try:
+        if overnight.load_stats(now.replace(tzinfo=None)) is None:
+            us = overnight.fetch_us_moves()
+            if us:
+                overnight.build_and_save(us["spx"], now.replace(tzinfo=None))
+                print("[overnight] stats refreshed")
+    except Exception as e:
+        print(f"[overnight] refresh raised {e.__class__.__name__}: {e}")
+
+
 def run_summary():
     state = load_full_state()
     plans = [strategy.TradePlan(**p) for p in state.get("confirmed_plans", [])]
@@ -1401,6 +1483,15 @@ def run_auto():
         save_full_state(state)
 
     if (
+        config.OVERNIGHT_ENABLED
+        and OVERNIGHT_START <= t <= OVERNIGHT_END
+        and not state.get("overnight_sent")
+    ):
+        print(f"[auto] {t} IST - checking the overnight US close")
+        run_overnight()
+        return
+
+    if (
         config.PENNY_ENABLED
         and PENNY_ARM_START <= t <= PENNY_ARM_END
         and (not main_on or state.get("sent_watchlist") or t > WATCHLIST_WINDOW[1])
@@ -1501,6 +1592,16 @@ def run_auto():
         _penny["next_evening"] = now + timedelta(seconds=PENNY_EVENING_RETRY_SECONDS)
         print(f"[auto] {t} IST - building tomorrow's gap-fade universe")
         run_penny_arm(evening=True)
+        return
+
+    if (
+        config.OVERNIGHT_ENABLED
+        and OVERNIGHT_REFRESH_START <= t <= PENNY_EVENING_END
+        and _overnight["tried"] != now.date()
+        and (state.get("penny_evening_done") or t >= PENNY_SHEET_GIVE_UP or not config.PENNY_ENABLED)
+    ):
+        print(f"[auto] {t} IST - refreshing the overnight stats if stale")
+        run_overnight_refresh()
         return
 
     print(f"[auto] {t} IST - nothing to do (outside windows or already sent today)")

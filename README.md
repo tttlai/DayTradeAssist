@@ -249,6 +249,20 @@ drops back, one that opens well below bounces. So:
   is off by default until the live record backs it up; each alert's
   `market_gap_pct` is saved in `penny_alerts.jsonl` to check that. Earnings
   (results-day gaps) are not covered: no free results calendar was tested.
+- **Overnight Shock Watch (`/shock`, and 08:30 on shock mornings).** After a
+  big US sell-off, which stocks have historically opened lowest? For each NSE
+  stock the past ~265 mornings that followed an S&P drop of 1%+ are averaged
+  (opening gap, and the move from the open to the close), net of the stock's
+  own normal gap, and the most affected are listed in groups: liquid names,
+  the Rs 10-100 range, and silver/gold ETFs (those follow the metal). The note
+  also shows the US close (S&P, Nasdaq, chips, VIX, silver, gold, copper) and
+  how the Nifty usually reacts. It is an average of what happened, not a
+  forecast: a regression on so few big days gave absurd magnitudes, so none is
+  made. Send `/shock` any time (it builds the statistics on first use, about 4
+  minutes, outside market hours); it is also sent automatically at 08:30-08:55
+  if the S&P fell `OVERNIGHT_SHOCK_SPX` (1.5%) or more. The statistics are
+  cached in the data dir and refreshed weekly after the 18:00 build.
+  `OVERNIGHT_ENABLED=false` turns it off.
 - **From 09:15:30, "Gap Alert".** A live stream reads every stock's open. A gap
   UP of 2-5% is a **SHORT** alert, a gap DOWN of 2-5% a **BUY** alert, at most
   3 alerts a day, the most liquid first. Each shows the open, the current

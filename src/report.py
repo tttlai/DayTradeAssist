@@ -267,6 +267,44 @@ def format_gap_sheet_result(rows, for_label: str) -> str:
     return "\n".join(lines)
 
 
+def _plain(text: str) -> str:
+    """Dynamic text safe for Telegram Markdown (no stray underscores/asterisks)."""
+    return str(text).replace("_", " ").replace("*", "")
+
+
+def format_overnight_watch(us: dict, ranked: dict, nifty: dict | None, label: str) -> str:
+    """The overnight shock note: what the US did, then the stocks that have
+    historically gapped down the most after such mornings."""
+    moves = us["moves"]
+    spx = moves.get("S&P 500", 0.0)
+    lines = [f"*Overnight Shock Watch — {_plain(label)}*", ""]
+    lines.append(
+        f"US close {us['as_of'].strftime('%a %d %b')}: "
+        + ", ".join(f"{name} {pct * 100:+.1f}%" for name, pct in moves.items())
+    )
+    if nifty:
+        lines.append(
+            f"After US drops of 1%+ the Nifty has gapped {nifty['gap'] * 100:+.2f}% on average "
+            f"({nifty['n']} mornings), often recovering by the close. "
+            + (f"This drop is bigger than most (S&P {spx * 100:+.1f}%), so expect more." if spx <= -0.02 else "")
+        )
+    sections = (
+        ("liquid", "Most affected, liquid stocks"), ("penny", "Penny range (Rs 10-100)"),
+        ("commodity", "Silver/gold ETFs (they follow the metal, not a gap fade)"),
+    )
+    for key, title in sections:
+        rows = ranked.get(key) or []
+        if not rows:
+            continue
+        lines += ["", f"*{title}*"]
+        for r in rows:
+            lines.append(f"{_plain(r['symbol'])}: opens {r['gap'] * 100:+.1f}% on average, then {r['oc'] * 100:+.1f}% by the close")
+    lines += ["", "_Averages of what happened after US drops of 1%+ over the past year (not a forecast): "
+                  "magnitudes for a drop this size are uncertain, and gaps in these stocks often reverse. "
+                  "Not advice._"]
+    return "\n".join(lines)
+
+
 def format_trade_paths(paths) -> str:
     """Observation-only look back at what each trade's price did after entry
     (src/tradepath.py). Informational: nothing here changes any decision."""

@@ -84,6 +84,10 @@ MAX_PER_SECTOR = _get_int("MAX_PER_SECTOR", 2)
 # eval). Off: the service now runs only the gap-fade (penny) scan. Set
 # MAIN_ENABLED=true to bring it back.
 MAIN_ENABLED = _get_bool("MAIN_ENABLED", False)
+# Overnight shock watch: after a big US sell-off, a Telegram note (and /shock) on
+# which Indian stocks have historically gapped down the most on such mornings.
+OVERNIGHT_ENABLED = _get_bool("OVERNIGHT_ENABLED", True)
+OVERNIGHT_SHOCK_SPX = _get_float("OVERNIGHT_SHOCK_SPX", 0.015)  # S&P fell at least this much
 PENNY_ENABLED = _get_bool("PENNY_ENABLED", True)
 # Market-wide opening gap (Nifty ETF, which is how overnight US moves and
 # geopolitical shocks show up at the Indian open). Beyond this the gap fade has
