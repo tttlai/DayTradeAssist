@@ -263,9 +263,12 @@ drops back, one that opens well below bounces. So:
   if the S&P fell `OVERNIGHT_SHOCK_SPX` (1.5%) or more. The statistics are
   cached in the data dir and refreshed weekly after the 18:00 build.
   `OVERNIGHT_ENABLED=false` turns it off.
-- **News Watch (00:00 IST ahead of each trading day, and `/news`).** Headlines
-  since the start of the previous trading day (so a Monday covers the weekend)
-  are collected from free RSS feeds (Google News, Economic Times, Mint,
+- **News Watch (23:45 IST the evening before each trading day, and `/news`).**
+  Only that day's headlines (released since 00:00) are used, for the next
+  day's session; when the day before the session had no trading (Monday, after
+  a holiday), everything since the last session's close is used and Sunday
+  night sends Monday's report. Each story shows when it was released (IST) and
+  by whom. Headlines are collected from free RSS feeds (Google News, Economic Times, Mint,
   Business Standard, BusinessLine). One Claude call picks at most 6 stories
   that could move specific stocks, such as a sector output estimate or a
   government ban, and names the affected NSE symbols with a direction and why.

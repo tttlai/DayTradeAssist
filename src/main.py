@@ -107,8 +107,6 @@ def _default_state() -> dict:
         "penny_review_done": False,
         "penny_sheet_done": False,  # the graded order sheet for today has been sent
         "overnight_sent": False,  # the morning overnight-shock note has been handled today
-        "news_sent": False,  # tonight's news report (for today's session) has been handled
-        "news_attempts": 0,
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "gate_log": [],  # per-window, per-stock confirmation gate results, reused by run_eval()
         "sent_summary": False,
@@ -1172,28 +1170,64 @@ NEWS_RETRY_SECONDS = 600
 _news = {"next_try": None}
 
 
-def _news_since(now) -> datetime:
-    """Start of the previous trading day (IST), as an aware time: a Monday
-    report covers Friday and the weekend."""
-    d = now.date() - timedelta(days=1)
+def _news_state() -> dict:
+    """Which session has had its report. Kept in its own file because the
+    daily state resets at midnight, inside the sending window."""
+    try:
+        return json.loads((config.PERSIST_DIR / "news_state.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_news_state(data: dict):
+    config.PERSIST_DIR.mkdir(parents=True, exist_ok=True)
+    (config.PERSIST_DIR / "news_state.json").write_text(json.dumps(data))
+
+
+def _next_session(now):
+    """The next NSE session whose open is still ahead."""
+    if timeutil.is_trading_day(now.date()) and now.time() < dtime(9, 15):
+        return now.date()
+    return _next_trading_day(now.date())
+
+
+def _news_since(session) -> datetime:
+    """Where a session's news starts: 00:00 IST on the day before it. If that
+    day had no trading (a Monday, or after a holiday), the last session's close,
+    so nothing from the break is lost."""
+    d = session - timedelta(days=1)
+    start = dtime(0, 0)
     for _ in range(14):
         if timeutil.is_trading_day(d):
             break
-        d -= timedelta(days=1)
-    return datetime.combine(d, dtime(0, 0), tzinfo=timezone(timeutil.IST_OFFSET))
+        d, start = d - timedelta(days=1), dtime(15, 30)
+    return datetime.combine(d, start, tzinfo=news.IST)
 
 
-def build_news_report(now) -> str:
+def _news_due_session(now):
+    """The session a scheduled report is due for right now, else None. An
+    evening NEWS_TIME reports that day's news for the next day's session."""
+    start = datetime.combine(now.date(), datetime.strptime(config.NEWS_TIME, "%H:%M").time())
+    if now < start:
+        start -= timedelta(days=1)
+    if now - start >= timedelta(hours=NEWS_WINDOW_HOURS):
+        return None
+    session = start.date() + timedelta(days=1 if start.hour >= 12 else 0)
+    return session if timeutil.is_trading_day(session) else None
+
+
+def build_news_report(session) -> str:
     """Fetch headlines, ask Claude, verify the tickers, format. Raises on
     failure so the caller can retry or explain."""
-    headlines = news.fetch_headlines(_news_since(now))
+    since = _news_since(session)
+    headlines = news.fetch_headlines(since)
     if not headlines:
         raise RuntimeError("no headlines could be fetched")
-    events = news.analyze(headlines)
+    since_label, label = since.strftime("%d %b %H:%M"), session.strftime("%a %d %b")
+    events = news.analyze(headlines, window=f"These were released since {since_label} IST, for the {label} NSE session.")
     market = news.market_snapshot()
-    label = now.strftime("%a %d %b %H:%M")
     return report.format_news_report(
-        news.verify(events, market), headlines, label,
+        news.verify(events, market), headlines, label, since_label=since_label,
         session_label="the last NSE session" if market else None,
     )
 
@@ -1206,38 +1240,31 @@ def news_text() -> str:
     if timeutil.is_trading_day(now.date()) and dtime(9, 0) <= now.time() <= dtime(9, 40):
         return "News report is paused 09:00-09:40 so it can't delay the gap alerts. Try again after that."
     try:
-        return build_news_report(now)
+        return build_news_report(_next_session(now))
     except Exception as e:
         return f"News report failed: {e.__class__.__name__}: {report._plain(str(e)[:200])}"
 
 
-def _news_due(t) -> bool:
-    start = datetime.strptime(config.NEWS_TIME, "%H:%M")
-    minutes = (t.hour * 60 + t.minute) - (start.hour * 60 + start.minute)
-    return 0 <= minutes % 1440 < NEWS_WINDOW_HOURS * 60
-
-
-def run_news():
+def run_news(session):
     """The scheduled report. Retries a few times, then says it couldn't."""
-    now = timeutil.now_ist()
-    _news["next_try"] = now + timedelta(seconds=NEWS_RETRY_SECONDS)
-    state = load_full_state()
+    _news["next_try"] = timeutil.now_ist() + timedelta(seconds=NEWS_RETRY_SECONDS)
+    key = session.isoformat()
+    state = _news_state()
     try:
-        message = build_news_report(now)
+        message = build_news_report(session)
     except Exception as e:
         print(f"[news] failed: {e.__class__.__name__}: {e}")
-        state["news_attempts"] = state.get("news_attempts", 0) + 1
-        if state["news_attempts"] >= NEWS_ATTEMPTS:
-            state["news_sent"] = True
+        state["attempts"] = state.get("attempts", 0) + 1 if state.get("attempts_for") == key else 1
+        state["attempts_for"] = key
+        if state["attempts"] >= NEWS_ATTEMPTS:
+            state["sent_for"] = key
             notify.send_message(
                 f"*News Watch*\n\n⚠️ Couldn't build tonight's report: {e.__class__.__name__}: {report._plain(str(e)[:200])}"
             )
-        save_full_state(state)
+        _save_news_state(state)
         return
     notify.send_message(message)
-    state = load_full_state()
-    state["news_sent"] = True
-    save_full_state(state)
+    _save_news_state({**state, "sent_for": key})
 
 
 def run_summary():
@@ -1508,6 +1535,18 @@ def run_auto():
     handle_commands()
 
     now = timeutil.now_ist()
+    # Before the trading-day gate: Monday's report goes out on Sunday night.
+    if config.NEWS_ENABLED and config.ANTHROPIC_API_KEY:
+        session = _news_due_session(now)
+        if (
+            session
+            and _news_state().get("sent_for") != session.isoformat()
+            and (_news["next_try"] is None or now >= _news["next_try"])
+        ):
+            print(f"[auto] {now.time()} IST - building the news report for {session}")
+            run_news(session)
+            return
+
     if not timeutil.is_trading_day(now.date()):
         # Weekend or listed exchange holiday: no watchlist, checks, summary or
         # (paid) eval. Weekends stay silent; a weekday holiday gets one note so
@@ -1559,17 +1598,6 @@ def run_auto():
         )
         state["watchlist_failure_notified"] = True
         save_full_state(state)
-
-    if (
-        config.NEWS_ENABLED
-        and config.ANTHROPIC_API_KEY
-        and _news_due(t)
-        and not state.get("news_sent")
-        and (_news["next_try"] is None or now >= _news["next_try"])
-    ):
-        print(f"[auto] {t} IST - building the news report")
-        run_news()
-        return
 
     if (
         config.OVERNIGHT_ENABLED

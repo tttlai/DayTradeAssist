@@ -305,12 +305,17 @@ def format_overnight_watch(us: dict, ranked: dict, nifty: dict | None, label: st
     return "\n".join(lines)
 
 
-def format_news_report(events, headlines, label: str, session_label: str | None = None) -> str:
-    """The nightly news note: each market-moving story with the stocks it
-    could affect and how far each already moved in the last session."""
+def format_news_report(events, headlines, label: str, since_label: str = "", session_label: str | None = None) -> str:
+    """The news note for the session `label`: each market-moving story with
+    when it was released, the stocks it could affect and how far each already
+    moved in the last session."""
+    from . import news
     arrows = {"up": "🟢 likely UP", "down": "🔴 likely DOWN", "mixed": "🟡 mixed"}
     by_id = {h["id"]: h for h in headlines}
-    lines = [f"*News Watch — {_plain(label)}*", ""]
+    lines = [f"*News Watch — for the {_plain(label)} session*"]
+    if since_label:
+        lines.append(f"News released since {_plain(since_label)} IST")
+    lines.append("")
     if not events:
         lines.append(f"Nothing in {len(headlines)} headlines looked likely to move particular stocks.")
         return "\n".join(lines)
@@ -318,13 +323,14 @@ def format_news_report(events, headlines, label: str, session_label: str | None 
                   "already moved a lot may have the news priced in. Check the story before acting. Not advice._"]
     shown = 0
     for n, e in enumerate(events, 1):
-        outlets = []
-        for i in e.get("source_ids", []):
-            source = by_id.get(i, {}).get("source")
-            if source and source not in outlets:
-                outlets.append(source)
+        released = []  # (time, outlet), earliest first, one per outlet
+        for h in sorted((by_id[i] for i in e.get("source_ids", []) if i in by_id), key=lambda h: h["published"]):
+            if h["source"] not in [outlet for _, outlet in released]:
+                released.append((news.stamp(h["published"]), h["source"]))
         block = [
             f"*{n}. {_plain(e['headline'])}*",
+            "🕒 Released " + ", ".join(f"{when} IST ({_plain(outlet)})" for when, outlet in released[:3])
+            if released else "🕒 Release time not identified",
             f"{arrows.get(e.get('direction'), '')}, {_plain(e.get('strength', ''))} impact, {_plain(e.get('sector', ''))}",
             _plain(e.get("why", "")),
         ]
@@ -335,8 +341,6 @@ def format_news_report(events, headlines, label: str, session_label: str | None 
                 if s.get("change") is not None:
                     move += f" ({s['change'] * 100:+.1f}% last session{', big move already' if abs(s['change']) >= 0.05 else ''})"
             block.append(f"• {_plain(s['symbol'])}{move}: {_plain(s.get('link', ''))}")
-        if outlets:
-            block.append(f"Sources: {_plain(', '.join(outlets[:3]))}")
         block.append("")
         if len("\n".join(lines + block + footer)) > 3900:
             break
