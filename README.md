@@ -280,6 +280,14 @@ drops back, one that opens well below bounces. So:
   `claude-opus-5-5`, with server-side refusal fallback). `NEWS_TIME` changes
   the time (it still sends up to 6 hours late after a restart);
   `NEWS_ENABLED=false` turns it off. `/news` is paused 09:00-09:40.
+- **News Watch check (after 16:40, and `/newseval`).** The stocks each report
+  named are saved, and once NSE publishes the day's file they are checked:
+  opening gap, day's move, and what buying (called UP) or shorting (DOWN) at
+  the open and closing at day end would have returned, plus the Nifty for
+  comparison. Only calls sent before that day's 09:15 count; the latest one per
+  stock wins. "Mixed" calls aren't scored. Saved to `news_picks.jsonl` and
+  `news_results.jsonl`; `/newseval` shows the running record, split by the
+  impact the report assigned. No AI call is used for the check.
 - **From 09:15:30, "Gap Alert".** A live stream reads every stock's open. A gap
   UP of 2-5% is a **SHORT** alert, a gap DOWN of 2-5% a **BUY** alert, at most
   3 alerts a day, the most liquid first. Each shows the open, the current

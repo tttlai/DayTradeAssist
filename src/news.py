@@ -201,3 +201,80 @@ def verify(events: list[dict], market: dict) -> list[dict]:
         if stocks:
             kept.append({**event, "stocks": stocks[:MAX_STOCKS]})
     return sorted(kept, key=lambda e: order.get(e.get("strength"), 3))[:MAX_EVENTS]
+
+
+# ---------- end-of-day check of what the report named ----------
+SIGN = {"up": 1, "down": -1}  # "mixed" stories call no direction, so aren't scored
+
+
+def pick_records(events: list[dict], session: str, sent_at: str) -> list[dict]:
+    """One record per named stock, kept so the day's outcome can be checked."""
+    return [
+        {"session": session, "sent_at": sent_at, "symbol": s["symbol"], "direction": e.get("direction"),
+         "strength": e.get("strength"), "headline": e.get("headline", "")}
+        for e in events for s in e["stocks"]
+    ]
+
+
+def latest_picks(records: list[dict], session: str) -> list[dict]:
+    """Per symbol, the last call made before that session's 09:15 open.
+    Anything sent later could have seen the price, so it doesn't count."""
+    latest = {}
+    for r in sorted(records, key=lambda r: r.get("sent_at", "")):
+        if r.get("session") == session and r.get("sent_at", "") < f"{session}T09:15":
+            # a stock named twice in one report keeps its first (strongest) story
+            if r["symbol"] not in latest or r["sent_at"] > latest[r["symbol"]]["sent_at"]:
+                latest[r["symbol"]] = r
+    return list(latest.values())
+
+
+def _move(candles: list, session: str) -> dict | None:
+    if not candles or len(candles) < 2 or candles[-1][0] != session:
+        return None
+    prev, (_, o, h, l, c, _v) = candles[-2][4], candles[-1]
+    if prev <= 0 or o <= 0 or abs(o / prev - 1) > 0.25:  # split/bonus or bad data
+        return None
+    return {"gap": o / prev - 1, "day": c / prev - 1, "from_open": c / o - 1, "up_run": h / o - 1, "down_run": 1 - l / o}
+
+
+def grade(picks: list[dict], history: dict, session: str, benchmark: str = "NIFTYBEES"):
+    """(results, benchmark_move). history: {symbol: [previous day's candle,
+    session's candle]}. For an up/down call: `called` = closed that way versus
+    the previous close; `trade` = what buying (or shorting) at the open and
+    closing at the end of day returned, before costs; `best` = the most it
+    moved that way after the open; `vs_nifty` = the day's move beyond the
+    index, in the called direction."""
+    market = _move(history.get(benchmark, []), session)
+    results = []
+    for p in picks:
+        m = _move(history.get(p["symbol"], []), session)
+        row = {**p, "gap": None, "day": None, "from_open": None, "called": None, "trade": None, "best": None, "vs_nifty": None}
+        if m:
+            row.update(gap=m["gap"], day=m["day"], from_open=m["from_open"])
+            sign = SIGN.get(p.get("direction"))
+            if sign:
+                row.update(
+                    called=sign * m["day"] > 0, trade=sign * m["from_open"],
+                    best=m["up_run"] if sign > 0 else m["down_run"],
+                    vs_nifty=sign * (m["day"] - market["day"]) if market else None,
+                )
+        results.append(row)
+    return results, market
+
+
+def record_line(results: list[dict]) -> str:
+    """One line over every scored call, or "" if there are none."""
+    done = [r for r in results if r.get("trade") is not None]
+    if not done:
+        return ""
+    n = len(done)
+    beat = [r["vs_nifty"] for r in done if r.get("vs_nifty") is not None]
+    line = (
+        f"{n} calls: {sum(1 for r in done if r['called'])} closed the called way, "
+        f"{sum(1 for r in done if r['trade'] > 0)} made money taken at the open, "
+        f"average {100 * sum(r['trade'] for r in done) / n:+.2f}% per call from the open (before costs)"
+    )
+    if beat:
+        line += f", {100 * sum(beat) / len(beat):+.2f}% on the day beyond the Nifty"
+    return line + "."
+

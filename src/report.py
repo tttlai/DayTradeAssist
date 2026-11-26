@@ -353,6 +353,37 @@ def format_news_report(events, headlines, label: str, since_label: str = "", ses
     return "\n".join(lines + footer)
 
 
+def format_news_eval(results, market, label: str, so_far: str) -> str:
+    """How the stocks the news report named for a session actually did."""
+    from . import news
+
+    lines = [f"*News Watch check — {_plain(label)}*", ""]
+    if market:
+        lines += [f"Nifty that day: opened {market['gap'] * 100:+.1f}%, closed {market['day'] * 100:+.1f}%", ""]
+    scored = sorted((r for r in results if r["trade"] is not None), key=lambda r: r["trade"], reverse=True)
+    for r in scored:
+        line = (
+            f"{'✅' if r['trade'] > 0 else '❌'} {_plain(r['symbol'])} (called {r['direction'].upper()}): opened {r['gap'] * 100:+.1f}%, "
+            f"closed {r['day'] * 100:+.1f}% | from open {r['from_open'] * 100:+.1f}%"
+        )
+        if len("\n".join(lines + [line])) > 3300:
+            lines.append("…more left out for length.")
+            break
+        lines.append(line)
+    other = [r for r in results if r["trade"] is None]
+    if other:
+        lines.append("Not scored (mixed call or no price): " + ", ".join(
+            f"{_plain(r['symbol'])}" + (f" {r['day'] * 100:+.1f}%" if r["day"] is not None else "") for r in other[:15]
+        ))
+    if scored:
+        lines += ["", f"Today, {news.record_line(results)}"]
+    if so_far:
+        lines.append(f"All sessions so far, {so_far}")
+    lines += ["", "_✅ = money made buying (UP) or shorting (DOWN) at the open and closing at day end. "
+                  "A few days prove nothing either way._"]
+    return "\n".join(lines)
+
+
 def format_trade_paths(paths) -> str:
     """Observation-only look back at what each trade's price did after entry
     (src/tradepath.py). Informational: nothing here changes any decision."""

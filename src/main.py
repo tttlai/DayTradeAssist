@@ -106,6 +106,7 @@ def _default_state() -> dict:
         "penny_alerts": [],  # gap alerts sent today (reviewed after the close)
         "penny_review_done": False,
         "penny_sheet_done": False,  # the graded order sheet for today has been sent
+        "news_eval_done": False,  # today's check of the news report's stocks has been handled
         "overnight_sent": False,  # the morning overnight-shock note has been handled today
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "gate_log": [],  # per-window, per-stock confirmation gate results, reused by run_eval()
@@ -201,6 +202,8 @@ def handle_commands():
             notify.send_message(overnight_text())
         elif cmd == "/news":
             notify.send_message(news_text())
+        elif cmd == "/newseval":
+            notify.send_message(news_eval_text())
         elif cmd == "/stats":
             notify.send_message(store.trade_stats(store.read_records("trades.jsonl")))
         elif cmd in ("/health", "/status"):
@@ -212,7 +215,7 @@ def handle_commands():
                 "Angel One + Railway status."
             )
         else:
-            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats, /stream, /penny, /shock, /news")
+            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats, /stream, /penny, /shock, /news, /newseval")
 
     if new_last_id != last_id:
         _save_last_update_id(new_last_id)
@@ -1167,7 +1170,7 @@ def run_overnight_refresh():
 NEWS_WINDOW_HOURS = 6  # send any time up to this long after NEWS_TIME (e.g. after a restart)
 NEWS_ATTEMPTS = 3
 NEWS_RETRY_SECONDS = 600
-_news = {"next_try": None}
+_news = {"next_try": None, "next_eval": None}
 
 
 def _news_state() -> dict:
@@ -1226,8 +1229,12 @@ def build_news_report(session) -> str:
     since_label, label = since.strftime("%d %b %H:%M"), session.strftime("%a %d %b")
     events = news.analyze(headlines, window=f"These were released since {since_label} IST, for the {label} NSE session.")
     market = news.market_snapshot()
+    verified = news.verify(events, market)
+    sent_at = timeutil.now_ist().strftime("%Y-%m-%dT%H:%M")
+    for record in news.pick_records(verified, session.isoformat(), sent_at):
+        store.append_record("news_picks.jsonl", record, key=("session", "symbol", "sent_at"))
     return report.format_news_report(
-        news.verify(events, market), headlines, label, since_label=since_label,
+        verified, headlines, label, since_label=since_label,
         session_label="the last NSE session" if market else None,
     )
 
@@ -1265,6 +1272,54 @@ def run_news(session):
         return
     notify.send_message(message)
     _save_news_state({**state, "sent_for": key})
+
+
+NEWS_EVAL_START = dtime(16, 40)  # NSE's file for the day is out at ~16:35 IST
+NEWS_EVAL_END = dtime(23, 0)
+
+
+def run_news_eval() -> bool:
+    """After the close, check how the stocks named for today's session did.
+    Returns True when finished (sent, or nothing to check); False to try again
+    shortly. Never raises."""
+    try:
+        today = timeutil.now_ist().date()
+        key = today.isoformat()
+        picks = news.latest_picks(store.read_records("news_picks.jsonl"), key)
+        if picks:
+            try:
+                if nse_data.fetch_bhavcopy_for_date(today) is None:
+                    return False  # today's file isn't out yet
+                history = nse_data.fetch_daily_history(None, days=2)
+            except nse_data.NSEUnavailable as e:
+                print(f"[news] eval: NSE unavailable ({e}); will retry")
+                return False
+            results, market = news.grade(picks, history, key)
+            for r in results:
+                store.append_record("news_results.jsonl", r, key=("session", "symbol"))
+            notify.send_message(report.format_news_eval(
+                results, market, today.strftime("%a %d %b"),
+                news.record_line(store.read_records("news_results.jsonl")),
+            ))
+    except Exception as e:
+        print(f"[news] eval raised {e.__class__.__name__}: {e}")
+    state = load_full_state()
+    state["news_eval_done"] = True
+    save_full_state(state)
+    return True
+
+
+def news_eval_text() -> str:
+    """Answer to /newseval: the running record of the news report's calls."""
+    results = store.read_records("news_results.jsonl")
+    if not results:
+        return "No news report calls have been checked yet. The first check comes after 16:40 on the day of a report."
+    lines = ["News Watch record", "", news.record_line(results) or "No scored call yet."]
+    for strength in ("high", "medium", "low"):
+        line = news.record_line([r for r in results if r.get("strength") == strength])
+        if line:
+            lines.append(f"{strength.title()} impact: {line}")
+    return report._plain("\n".join(lines))
 
 
 def run_summary():
@@ -1686,6 +1741,18 @@ def run_auto():
         )
         state["sent_eval"] = True
         save_full_state(state)
+        return
+
+    if (
+        config.NEWS_ENABLED
+        and NEWS_EVAL_START <= t <= NEWS_EVAL_END
+        and not state.get("news_eval_done")
+        and (_news["next_eval"] is None or now >= _news["next_eval"])
+        and news.latest_picks(store.read_records("news_picks.jsonl"), now.date().isoformat())
+    ):
+        _news["next_eval"] = now + timedelta(seconds=PENNY_EVENING_RETRY_SECONDS)
+        print(f"[auto] {t} IST - checking today's news report stocks")
+        run_news_eval()
         return
 
     if (
