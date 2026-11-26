@@ -263,6 +263,20 @@ drops back, one that opens well below bounces. So:
   if the S&P fell `OVERNIGHT_SHOCK_SPX` (1.5%) or more. The statistics are
   cached in the data dir and refreshed weekly after the 18:00 build.
   `OVERNIGHT_ENABLED=false` turns it off.
+- **News Watch (00:00 IST ahead of each trading day, and `/news`).** Headlines
+  since the start of the previous trading day (so a Monday covers the weekend)
+  are collected from free RSS feeds (Google News, Economic Times, Mint,
+  Business Standard, BusinessLine). One Claude call picks at most 6 stories
+  that could move specific stocks, such as a sector output estimate or a
+  government ban, and names the affected NSE symbols with a direction and why.
+  Tickers NSE didn't trade are dropped, and each stock shows its last close and
+  last session's move, flagged when it already moved 5%+ (the news may be
+  priced in). It reads headlines only and has not been tested against price
+  history, so treat it as a reading list, not signals. Needs
+  `ANTHROPIC_API_KEY`; one paid API call per report (`NEWS_MODEL`, default
+  `claude-opus-5-5`, with server-side refusal fallback). `NEWS_TIME` changes
+  the time (it still sends up to 6 hours late after a restart);
+  `NEWS_ENABLED=false` turns it off. `/news` is paused 09:00-09:40.
 - **From 09:15:30, "Gap Alert".** A live stream reads every stock's open. A gap
   UP of 2-5% is a **SHORT** alert, a gap DOWN of 2-5% a **BUY** alert, at most
   3 alerts a day, the most liquid first. Each shows the open, the current

@@ -305,6 +305,50 @@ def format_overnight_watch(us: dict, ranked: dict, nifty: dict | None, label: st
     return "\n".join(lines)
 
 
+def format_news_report(events, headlines, label: str, session_label: str | None = None) -> str:
+    """The nightly news note: each market-moving story with the stocks it
+    could affect and how far each already moved in the last session."""
+    arrows = {"up": "🟢 likely UP", "down": "🔴 likely DOWN", "mixed": "🟡 mixed"}
+    by_id = {h["id"]: h for h in headlines}
+    lines = [f"*News Watch — {_plain(label)}*", ""]
+    if not events:
+        lines.append(f"Nothing in {len(headlines)} headlines looked likely to move particular stocks.")
+        return "\n".join(lines)
+    footer = ["", "_Picked by an AI from headlines only, and not tested against price history. A stock that "
+                  "already moved a lot may have the news priced in. Check the story before acting. Not advice._"]
+    shown = 0
+    for n, e in enumerate(events, 1):
+        outlets = []
+        for i in e.get("source_ids", []):
+            source = by_id.get(i, {}).get("source")
+            if source and source not in outlets:
+                outlets.append(source)
+        block = [
+            f"*{n}. {_plain(e['headline'])}*",
+            f"{arrows.get(e.get('direction'), '')}, {_plain(e.get('strength', ''))} impact, {_plain(e.get('sector', ''))}",
+            _plain(e.get("why", "")),
+        ]
+        for s in e["stocks"]:
+            move = ""
+            if s.get("close") is not None:
+                move = f" ₹{s['close']:g}"
+                if s.get("change") is not None:
+                    move += f" ({s['change'] * 100:+.1f}% last session{', big move already' if abs(s['change']) >= 0.05 else ''})"
+            block.append(f"• {_plain(s['symbol'])}{move}: {_plain(s.get('link', ''))}")
+        if outlets:
+            block.append(f"Sources: {_plain(', '.join(outlets[:3]))}")
+        block.append("")
+        if len("\n".join(lines + block + footer)) > 3900:
+            break
+        lines += block
+        shown += 1
+    if shown < len(events):
+        lines.append(f"…{len(events) - shown} more left out for length.")
+    if session_label:
+        lines.append(f"Prices and moves are from {_plain(session_label)}.")
+    return "\n".join(lines + footer)
+
+
 def format_trade_paths(paths) -> str:
     """Observation-only look back at what each trade's price did after entry
     (src/tradepath.py). Informational: nothing here changes any decision."""

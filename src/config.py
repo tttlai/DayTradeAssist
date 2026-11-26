@@ -88,6 +88,11 @@ MAIN_ENABLED = _get_bool("MAIN_ENABLED", False)
 # which Indian stocks have historically gapped down the most on such mornings.
 OVERNIGHT_ENABLED = _get_bool("OVERNIGHT_ENABLED", True)
 OVERNIGHT_SHOCK_SPX = _get_float("OVERNIGHT_SHOCK_SPX", 0.015)  # S&P fell at least this much
+# Nightly news report (RSS headlines read by Claude; needs ANTHROPIC_API_KEY and
+# costs one API call per report). Sent at NEWS_TIME IST ahead of each trading day.
+NEWS_ENABLED = _get_bool("NEWS_ENABLED", True)
+NEWS_TIME = os.getenv("NEWS_TIME", "00:00")
+NEWS_MODEL = os.getenv("NEWS_MODEL", "claude-opus-5-5")
 PENNY_ENABLED = _get_bool("PENNY_ENABLED", True)
 # Market-wide opening gap (Nifty ETF, which is how overnight US moves and
 # geopolitical shocks show up at the Indian open). Beyond this the gap fade has

@@ -54,9 +54,9 @@ import argparse
 import dataclasses
 import json
 import time
-from datetime import time as dtime, timedelta
+from datetime import datetime, time as dtime, timedelta, timezone
 
-from . import config, eval_agent, github_pr, health, notify, nse_data, overnight, penny, report, screener, store, stream, strategy, telegram_commands, timeutil, tradepath, tradesim
+from . import config, eval_agent, github_pr, health, news, notify, nse_data, overnight, penny, report, screener, store, stream, strategy, telegram_commands, timeutil, tradepath, tradesim
 from .angel_api import AngelAPI
 from .screener import Candidate, build_watchlist
 
@@ -107,6 +107,8 @@ def _default_state() -> dict:
         "penny_review_done": False,
         "penny_sheet_done": False,  # the graded order sheet for today has been sent
         "overnight_sent": False,  # the morning overnight-shock note has been handled today
+        "news_sent": False,  # tonight's news report (for today's session) has been handled
+        "news_attempts": 0,
         "confirm_checks_done": [],  # window keys from CONFIRM_WINDOWS already run today
         "gate_log": [],  # per-window, per-stock confirmation gate results, reused by run_eval()
         "sent_summary": False,
@@ -199,6 +201,8 @@ def handle_commands():
             notify.send_message(stream_status_text())
         elif cmd == "/shock":
             notify.send_message(overnight_text())
+        elif cmd == "/news":
+            notify.send_message(news_text())
         elif cmd == "/stats":
             notify.send_message(store.trade_stats(store.read_records("trades.jsonl")))
         elif cmd in ("/health", "/status"):
@@ -210,7 +214,7 @@ def handle_commands():
                 "Angel One + Railway status."
             )
         else:
-            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats, /stream, /penny, /shock")
+            notify.send_message(f"Unrecognized command: {text}\n\nAvailable: /health, /stats, /stream, /penny, /shock, /news")
 
     if new_last_id != last_id:
         _save_last_update_id(new_last_id)
@@ -1162,6 +1166,80 @@ def run_overnight_refresh():
         print(f"[overnight] refresh raised {e.__class__.__name__}: {e}")
 
 
+NEWS_WINDOW_HOURS = 6  # send any time up to this long after NEWS_TIME (e.g. after a restart)
+NEWS_ATTEMPTS = 3
+NEWS_RETRY_SECONDS = 600
+_news = {"next_try": None}
+
+
+def _news_since(now) -> datetime:
+    """Start of the previous trading day (IST), as an aware time: a Monday
+    report covers Friday and the weekend."""
+    d = now.date() - timedelta(days=1)
+    for _ in range(14):
+        if timeutil.is_trading_day(d):
+            break
+        d -= timedelta(days=1)
+    return datetime.combine(d, dtime(0, 0), tzinfo=timezone(timeutil.IST_OFFSET))
+
+
+def build_news_report(now) -> str:
+    """Fetch headlines, ask Claude, verify the tickers, format. Raises on
+    failure so the caller can retry or explain."""
+    headlines = news.fetch_headlines(_news_since(now))
+    if not headlines:
+        raise RuntimeError("no headlines could be fetched")
+    events = news.analyze(headlines)
+    market = news.market_snapshot()
+    label = now.strftime("%a %d %b %H:%M")
+    return report.format_news_report(
+        news.verify(events, market), headlines, label,
+        session_label="the last NSE session" if market else None,
+    )
+
+
+def news_text() -> str:
+    """Answer to /news."""
+    now = timeutil.now_ist()
+    if not config.ANTHROPIC_API_KEY:
+        return "News report unavailable: ANTHROPIC_API_KEY is not set on the service."
+    if timeutil.is_trading_day(now.date()) and dtime(9, 0) <= now.time() <= dtime(9, 40):
+        return "News report is paused 09:00-09:40 so it can't delay the gap alerts. Try again after that."
+    try:
+        return build_news_report(now)
+    except Exception as e:
+        return f"News report failed: {e.__class__.__name__}: {report._plain(str(e)[:200])}"
+
+
+def _news_due(t) -> bool:
+    start = datetime.strptime(config.NEWS_TIME, "%H:%M")
+    minutes = (t.hour * 60 + t.minute) - (start.hour * 60 + start.minute)
+    return 0 <= minutes % 1440 < NEWS_WINDOW_HOURS * 60
+
+
+def run_news():
+    """The scheduled report. Retries a few times, then says it couldn't."""
+    now = timeutil.now_ist()
+    _news["next_try"] = now + timedelta(seconds=NEWS_RETRY_SECONDS)
+    state = load_full_state()
+    try:
+        message = build_news_report(now)
+    except Exception as e:
+        print(f"[news] failed: {e.__class__.__name__}: {e}")
+        state["news_attempts"] = state.get("news_attempts", 0) + 1
+        if state["news_attempts"] >= NEWS_ATTEMPTS:
+            state["news_sent"] = True
+            notify.send_message(
+                f"*News Watch*\n\n⚠️ Couldn't build tonight's report: {e.__class__.__name__}: {report._plain(str(e)[:200])}"
+            )
+        save_full_state(state)
+        return
+    notify.send_message(message)
+    state = load_full_state()
+    state["news_sent"] = True
+    save_full_state(state)
+
+
 def run_summary():
     state = load_full_state()
     plans = [strategy.TradePlan(**p) for p in state.get("confirmed_plans", [])]
@@ -1481,6 +1559,17 @@ def run_auto():
         )
         state["watchlist_failure_notified"] = True
         save_full_state(state)
+
+    if (
+        config.NEWS_ENABLED
+        and config.ANTHROPIC_API_KEY
+        and _news_due(t)
+        and not state.get("news_sent")
+        and (_news["next_try"] is None or now >= _news["next_try"])
+    ):
+        print(f"[auto] {t} IST - building the news report")
+        run_news()
+        return
 
     if (
         config.OVERNIGHT_ENABLED
